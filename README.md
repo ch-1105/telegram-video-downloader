@@ -1,95 +1,97 @@
 # Telegram Web Video Downloader
 
-一个简洁高效的 Telegram Web 视频下载器用户脚本，支持桌面端和移动端。
+A clean and efficient userscript for downloading videos from Telegram Web, supporting both desktop and mobile browsers.
 
-## ✨ 特性
+## ✨ Features
 
-- 📱 **移动端适配** - 完美支持手机浏览器
-- ⚡ **并发下载** - 多分片同时下载，提升速度
-- ⏸️ **暂停/恢复** - 支持下载中断和继续
-- 🎯 **智能命名** - 自动提取聊天名、消息内容生成文件名
-- 🛡️ **防重复** - 自动检测并避免文件名冲突
-- 📊 **进度显示** - 实时显示下载进度和速度
-- 🧹 **资源管理** - 完善的内存泄漏防护
+- 📱 **Mobile Support** - Fully optimized for mobile browsers
+- ⚡ **Concurrent Downloads** - Multi-chunk parallel downloading for faster speeds
+- ⏸️ **Pause/Resume** - Support for pausing and resuming downloads
+- 🎯 **Smart Naming** - Auto-extracts chat name and message content for filenames
+- 🛡️ **Duplicate Prevention** - Automatically detects and avoids filename conflicts
+- 📊 **Progress Display** - Real-time download progress and speed indicators
+- 🧹 **Resource Management** - Comprehensive memory leak prevention
 
-## 🔧 技术亮点
+## 🔧 Technical Highlights
 
-- **网络拦截**：通过 Hook XMLHttpRequest/fetch 捕获视频 URL
-- **分片下载**：使用 HTTP Range 请求实现断点续传
-- **并发控制**：Promise.all 实现多任务并行
-- **动态监听**：MutationObserver 监听 SPA 页面变化
-- **任务管理**：ES6 Class 实现下载任务状态控制
+- **Network Interception**: Captures video URLs by hooking XMLHttpRequest/fetch
+- **Chunked Downloads**: Implements resumable downloads using HTTP Range requests
+- **Concurrency Control**: Parallel task execution using Promise.all
+- **Dynamic Monitoring**: MutationObserver for SPA page changes
+- **Task Management**: ES6 Class-based download task state control
 
-## 📦 安装
+## 📦 Installation
 
-1. 安装 [Tampermonkey](https://www.tampermonkey.net/) 浏览器扩展
-2. 点击[这里安装脚本](src/telegram-video-downloader.user.js)（或手动复制代码创建新脚本）
-3. 访问 [Telegram Web](https://web.telegram.org/)
-4. 视频右上角会出现下载按钮
+1. Install the [Tampermonkey](https://www.tampermonkey.net/) browser extension
+2. Click [here to install the script](src/telegram-video-downloader.user.js) (or manually copy the code to create a new script)
+3. Visit [Telegram Web](https://web.telegram.org/)
+4. A download button will appear on video elements
 
-## 🚀 使用
+## 🚀 Usage
 
-1. 打开 Telegram Web
-2. 找到要下载的视频
-3. 点击视频上的 **⬇️ 下载** 按钮
-4. 在下载管理面板中查看进度
-5. 支持暂停、继续、取消操作
+1. Open Telegram Web
+2. Find the video you want to download
+3. Click the **⬇️ Download** button on the video
+4. Monitor progress in the download manager panel
+5. Supports pause, resume, and cancel operations
 
-## ⚙️ 配置
+## ⚙️ Configuration
 
-脚本顶部 `CONFIG` 对象可自定义：
+Customize settings by modifying the `CONFIG` object at the top of the script:
 
 ```javascript
 const CONFIG = {
-  CHUNK_SIZE: 512 * 1024,        // 分片大小（默认 512KB）
-  RETRY_COUNT: 3,                // 失败重试次数
-  CONCURRENT_DOWNLOADS: 3,       // 并发下载数
-  MAX_BUFFER_SIZE: 50 * 1024 * 1024,  // 缓冲区限制 50MB
-  OBSERVER_DEBOUNCE: 100         // DOM 扫描防抖延迟
+  CHUNK_SIZE: 512 * 1024,        // Chunk size (default 512KB)
+  RETRY_COUNT: 3,                // Number of retry attempts
+  CONCURRENT_DOWNLOADS: 3,       // Number of concurrent downloads
+  MAX_BUFFER_SIZE: 50 * 1024 * 1024,  // Buffer limit 50MB
+  OBSERVER_DEBOUNCE: 100         // DOM scan debounce delay
 };
 ```
 
-## 📂 项目结构
+## 📂 Project Structure
 
 ```
 telegram-video-downloader/
 ├── src/
-│   └── telegram-video-downloader.user.js  # 主脚本
+│   └── telegram-video-downloader.user.js  # Main script
 ├── README.md
 ├── LICENSE
 └── .gitignore
 ```
 
-## ⚠️ 免责声明
+## ⚠️ Disclaimer
 
-本工具仅供学习交流使用，用于下载**用户自己有权访问**的 Telegram 内容。
+This tool is provided for educational purposes only and should be used to download **content you have legitimate access to** on Telegram.
 
-使用者需自行承担以下责任：
-1. 遵守当地法律法规
-2. 尊重内容版权
-3. 不用于商业用途
-4. 不侵犯他人隐私
+Users are solely responsible for:
+1. Complying with applicable laws and regulations
+2. Respecting content copyrights
+3. Not using for commercial purposes
+4. Not infringing on others' privacy
 
-**作者不对任何滥用行为负责。**
+**The authors assume no responsibility for any misuse of this software.**
 
-## 📝 更新日志
+## 📝 Changelog
 
 ### v9.2
-- 重构代码结构，模块化设计
-- 添加完整的资源管理和清理机制
-- 优化移动端体验
-- 添加下载任务暂停/恢复功能
-- 实现智能文件名生成
+- Refactored code structure with modular design
+- Added comprehensive resource management and cleanup mechanisms
+- Optimized mobile experience
+- Added pause/resume functionality for downloads
+- Implemented intelligent filename generation
 
-## 🤝 贡献
+## 🤝 Contributing
 
-欢迎提交 Issue 和 Pull Request！
+Issues and Pull Requests are welcome!
 
-## 📄 许可证
+See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+
+## 📄 License
 
 [MIT License](LICENSE)
 
-## 🔗 相关
+## 🔗 Related Links
 
 - [Tampermonkey](https://www.tampermonkey.net/)
 - [Telegram Web](https://web.telegram.org/)
