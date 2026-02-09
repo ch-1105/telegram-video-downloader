@@ -7,9 +7,6 @@ A clean and efficient userscript for downloading videos from Telegram Web, suppo
 - 📱 **Mobile Support** - Fully optimized for mobile browsers
 - ⚡ **Concurrent Downloads** - Multi-chunk parallel downloading for faster speeds
 - ⏸️ **Pause/Resume** - Support for pausing and resuming downloads
-- 🎯 **Smart Naming** - Auto-extracts chat name and message content for filenames
-- 🛡️ **Duplicate Prevention** - Automatically detects and avoids filename conflicts
-- 📊 **Progress Display** - Real-time download progress and speed indicators
 - 🧹 **Resource Management** - Comprehensive memory leak prevention
 
 ## 🔧 Technical Highlights
@@ -71,15 +68,6 @@ Users are solely responsible for:
 4. Not infringing on others' privacy
 
 **The authors assume no responsibility for any misuse of this software.**
-
-## 📝 Changelog
-
-### v9.2
-- Refactored code structure with modular design
-- Added comprehensive resource management and cleanup mechanisms
-- Optimized mobile experience
-- Added pause/resume functionality for downloads
-- Implemented intelligent filename generation
 
 ## 🤝 Contributing
 
