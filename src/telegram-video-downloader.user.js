@@ -368,259 +368,472 @@
             const scale = CONFIG.UI_SCALE;
             const isMobile = CONFIG.IS_MOBILE;
 
-            style.textContent = `
-                /* 桌面端样式 */
-                .tg-dl-btn {
-                    position: absolute;
-                    top: ${8 * scale}px;
-                    right: ${8 * scale}px;
-                    background: #ff4757;
-                    color: white;
-                    border: none;
-                    padding: ${6 * scale}px ${12 * scale}px;
-                    border-radius: ${4 * scale}px;
-                    cursor: pointer;
-                    font-size: ${12 * scale}px;
-                    z-index: 9999;
-                    opacity: 0;
-                    transition: opacity 0.2s;
-                    touch-action: manipulation;
-                    -webkit-tap-highlight-color: transparent;
-                }
-                .tg-media-wrap:hover .tg-dl-btn,
-                .tg-media-wrap:active .tg-dl-btn {
-                    opacity: 1;
-                }
-                .tg-dl-btn:disabled {
-                    background: #888;
-                    cursor: not-allowed;
-                    opacity: 0.7;
-                }
-                .tg-media-wrap {
-                    position: relative !important;
-                }
+ style.textContent = `
+ /* Apple 风格设计系统 - SF Pro 风格 */
+ :root {
+ --tg-dl-primary: #007AFF;
+ --tg-dl-success: #34C759;
+ --tg-dl-warning: #FF9500;
+ --tg-dl-danger: #FF3B30;
+ --tg-dl-bg: rgba(255, 255, 255, 0.82);
+ --tg-dl-bg-dark: rgba(30, 30, 30, 0.85);
+ --tg-dl-text: #1C1C1E;
+ --tg-dl-text-secondary: #8E8E93;
+ --tg-dl-border: rgba(120, 120, 128, 0.2);
+ --tg-dl-shadow: 0 8px 32px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08);
+ --tg-dl-radius: 20px;
+ --tg-dl-radius-sm: 12px;
+ }
 
-                /* 移动端按钮样式 - 始终可见 */
-                @media (hover: none) and (pointer: coarse) {
-                    .tg-dl-btn {
-                        opacity: 1;
-                        padding: ${10 * scale}px ${16 * scale}px;
-                        font-size: ${14 * scale}px;
-                        min-width: 60px;
-                        min-height: 36px;
-                    }
-                }
+ @media (prefers-color-scheme: dark) {
+ :root {
+ --tg-dl-bg: rgba(44, 44, 46, 0.92);
+ --tg-dl-text: #FFFFFF;
+ --tg-dl-text-secondary: #98989D;
+ --tg-dl-border: rgba(120, 120, 128, 0.24);
+ }
+ }
 
-                .tg-dl-panel {
-                    position: fixed;
-                    ${isMobile ? 'top: 10px; left: 10px; right: 10px; width: auto;' : 'top: 20px; right: 20px; width: 380px;'}
-                    max-height: ${isMobile ? '60vh' : '450px'};
-                    background: #2f3542;
-                    border-radius: ${12 * scale}px;
-                    box-shadow: 0 10px 40px rgba(0,0,0,0.5);
-                    z-index: 10001;
-                    overflow: hidden;
-                    display: none;
-                    flex-direction: column;
-                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                }
-                .tg-dl-panel.active {
-                    display: flex;
-                }
-                .tg-dl-header {
-                    background: #1e272e;
-                    padding: ${15 * scale}px ${20 * scale}px;
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                }
-                .tg-dl-header h3 {
-                    margin: 0;
-                    color: white;
-                    font-size: ${16 * scale}px;
-                }
-                .tg-dl-close {
-                    background: none;
-                    border: none;
-                    color: #fff;
-                    font-size: ${20 * scale}px;
-                    cursor: pointer;
-                    opacity: 0.7;
-                    padding: ${8 * scale}px;
-                    min-width: ${36 * scale}px;
-                    min-height: ${36 * scale}px;
-                    touch-action: manipulation;
-                }
-                .tg-dl-close:hover, .tg-dl-close:active {
-                    opacity: 1;
-                }
-                .tg-dl-list {
-                    overflow-y: auto;
-                    max-height: ${isMobile ? '50vh' : '350px'};
-                    padding: ${10 * scale}px;
-                    -webkit-overflow-scrolling: touch;
-                }
-                .tg-dl-item {
-                    background: #3d3d3d;
-                    border-radius: ${8 * scale}px;
-                    padding: ${12 * scale}px;
-                    margin-bottom: ${10 * scale}px;
-                    color: white;
-                }
-                .tg-dl-item-header {
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: flex-start;
-                    margin-bottom: ${8 * scale}px;
-                    gap: ${8 * scale}px;
-                }
-                .tg-dl-filename {
-                    font-size: ${13 * scale}px;
-                    word-break: break-all;
-                    flex: 1;
-                    margin-right: ${10 * scale}px;
-                }
-                .tg-dl-actions {
-                    display: flex;
-                    gap: ${6 * scale}px;
-                }
-                .tg-dl-btn-small {
-                    background: #ff4757;
-                    color: white;
-                    border: none;
-                    padding: ${4 * scale}px ${8 * scale}px;
-                    border-radius: ${4 * scale}px;
-                    cursor: pointer;
-                    font-size: ${11 * scale}px;
-                    min-width: ${44 * scale}px;
-                    min-height: ${28 * scale}px;
-                    touch-action: manipulation;
-                }
-                .tg-dl-btn-small:hover, .tg-dl-btn-small:active {
-                    background: #ff3838;
-                }
-                .tg-dl-btn-pause {
-                    background: #ffa502;
-                }
-                .tg-dl-btn-pause:hover, .tg-dl-btn-pause:active {
-                    background: #ff9500;
-                }
-                .tg-dl-progress-bar {
-                    width: 100%;
-                    height: ${6 * scale}px;
-                    background: #555;
-                    border-radius: ${3 * scale}px;
-                    overflow: hidden;
-                }
-                .tg-dl-progress-fill {
-                    height: 100%;
-                    background: linear-gradient(90deg, #ff4757, #ffa502);
-                    width: 0%;
-                    transition: width 0.3s;
-                }
-                .tg-dl-status {
-                    font-size: ${11 * scale}px;
-                    color: #aaa;
-                    margin-top: ${5 * scale}px;
-                    display: flex;
-                    justify-content: space-between;
-                    flex-wrap: wrap;
-                    gap: ${4 * scale}px;
-                }
-                .tg-dl-toggle {
-                    position: fixed;
-                    bottom: ${isMobile ? '80px' : '20px'};
-                    right: ${20 * scale}px;
-                    background: #ff4757;
-                    color: white;
-                    border: none;
-                    padding: ${12 * scale}px ${20 * scale}px;
-                    border-radius: ${30 * scale}px;
-                    cursor: pointer;
-                    font-size: ${14 * scale}px;
-                    z-index: 10000;
-                    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-                    display: flex;
-                    align-items: center;
-                    gap: ${8 * scale}px;
-                    touch-action: manipulation;
-                    min-height: ${44 * scale}px;
-                }
-                .tg-dl-toggle:hover, .tg-dl-toggle:active {
-                    background: #ff3838;
-                }
-                .tg-dl-badge {
-                    background: #2ed573;
-                    color: white;
-                    border-radius: 50%;
-                    width: ${20 * scale}px;
-                    height: ${20 * scale}px;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    font-size: ${11 * scale}px;
-                    font-weight: bold;
-                }
-                .tg-dl-badge.hidden {
-                    display: none;
-                }
+ /* 视频下载按钮 */
+ .tg-dl-btn {
+ position: absolute;
+ top: 12px;
+ right: 12px;
+ background: rgba(0, 122, 255, 0.9);
+ color: white;
+ border: none;
+ padding: 8px 16px;
+ border-radius: 20px;
+ cursor: pointer;
+ font-size: 13px;
+ font-weight: 500;
+ z-index: 9999;
+ opacity: 0;
+ transform: scale(0.9);
+ transition: all 0.25s cubic-bezier(0.25, 0.1, 0.25, 1);
+ touch-action: manipulation;
+ -webkit-tap-highlight-color: transparent;
+ backdrop-filter: blur(10px);
+ -webkit-backdrop-filter: blur(10px);
+ box-shadow: 0 4px 12px rgba(0, 122, 255, 0.3);
+ letter-spacing: -0.01em;
+ }
+ .tg-media-wrap:hover .tg-dl-btn,
+ .tg-media-wrap:active .tg-dl-btn {
+ opacity: 1;
+ transform: scale(1);
+ }
+ .tg-dl-btn:hover {
+ background: rgba(0, 122, 255, 1);
+ transform: scale(1.02);
+ box-shadow: 0 6px 16px rgba(0, 122, 255, 0.4);
+ }
+ .tg-dl-btn:active {
+ transform: scale(0.98);
+ }
+ .tg-dl-btn:disabled {
+ background: rgba(142, 142, 147, 0.8);
+ cursor: not-allowed;
+ opacity: 0.6;
+ box-shadow: none;
+ }
+ .tg-media-wrap {
+ position: relative !important;
+ }
 
-                /* 移动端特定优化 */
-                @media (max-width: 768px) {
-                    .tg-dl-panel {
-                        border-radius: ${16 * scale}px;
-                    }
-                    .tg-dl-toggle {
-                        padding: ${14 * scale}px ${24 * scale}px;
-                        font-size: ${15 * scale}px;
-                    }
-                }
+ /* 移动端按钮样式 */
+ @media (hover: none) and (pointer: coarse) {
+ .tg-dl-btn {
+ opacity: 0.95;
+ transform: scale(1);
+ padding: 8px 14px;
+ font-size: 12px;
+ min-width: 56px;
+ min-height: 32px;
+ border-radius: 16px;
+ }
+ }
 
-                /* 防止iOS橡皮筋效果 */
-                .tg-dl-panel, .tg-dl-list {
-                    overscroll-behavior: contain;
-                }
-            `;
+ /* 主面板 - 毛玻璃效果 */
+ .tg-dl-panel {
+ position: fixed;
+ ${isMobile
+ ? 'bottom: 80px; left: 16px; right: 16px; width: auto; max-height: 55vh;'
+ : 'top: 20px; right: 20px; width: 400px; max-height: 500px;'
+ }
+ background: var(--tg-dl-bg);
+ border-radius: var(--tg-dl-radius);
+ border: 1px solid var(--tg-dl-border);
+ box-shadow: var(--tg-dl-shadow);
+ z-index: 10001;
+ overflow: hidden;
+ display: none;
+ flex-direction: column;
+ font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif;
+ backdrop-filter: saturate(180%) blur(20px);
+ -webkit-backdrop-filter: saturate(180%) blur(20px);
+ transition: all 0.35s cubic-bezier(0.32, 0.72, 0, 1);
+ }
+ .tg-dl-panel.active {
+ display: flex;
+ animation: panelSlideIn 0.35s cubic-bezier(0.32, 0.72, 0, 1);
+ }
+ @keyframes panelSlideIn {
+ from {
+ opacity: 0;
+ transform: ${isMobile ? 'translateY(20px)' : 'scale(0.95) translateY(-10px)'};
+ }
+ to {
+ opacity: 1;
+ transform: ${isMobile ? 'translateY(0)' : 'scale(1) translateY(0)'};
+ }
+ }
+
+ /* 头部 - 苹果风格标题栏 */
+ .tg-dl-header {
+ background: transparent;
+ padding: ${isMobile ? '14px 18px' : '16px 20px'};
+ display: flex;
+ justify-content: space-between;
+ align-items: center;
+ border-bottom: 1px solid var(--tg-dl-border);
+ }
+ .tg-dl-header h3 {
+ margin: 0;
+ color: var(--tg-dl-text);
+ font-size: ${isMobile ? '17px' : '18px'};
+ font-weight: 600;
+ letter-spacing: -0.02em;
+ }
+ .tg-dl-close {
+ background: rgba(142, 142, 147, 0.16);
+ border: none;
+ color: var(--tg-dl-text-secondary);
+ font-size: 20px;
+ cursor: pointer;
+ width: 28px;
+ height: 28px;
+ border-radius: 14px;
+ display: flex;
+ align-items: center;
+ justify-content: center;
+ transition: all 0.2s ease;
+ touch-action: manipulation;
+ }
+ .tg-dl-close:hover {
+ background: rgba(142, 142, 147, 0.24);
+ color: var(--tg-dl-text);
+ }
+ .tg-dl-close:active {
+ transform: scale(0.92);
+ }
+
+ /* 列表区域 */
+ .tg-dl-list {
+ overflow-y: auto;
+ max-height: ${isMobile ? '45vh' : '400px'};
+ padding: ${isMobile ? '10px' : '12px'};
+ -webkit-overflow-scrolling: touch;
+ }
+ .tg-dl-list::-webkit-scrollbar {
+ width: 6px;
+ }
+ .tg-dl-list::-webkit-scrollbar-track {
+ background: transparent;
+ }
+ .tg-dl-list::-webkit-scrollbar-thumb {
+ background: rgba(120, 120, 128, 0.2);
+ border-radius: 3px;
+ }
+
+ /* 下载项卡片 - 苹果风格卡片 */
+ .tg-dl-item {
+ background: rgba(120, 120, 128, 0.08);
+ border-radius: var(--tg-dl-radius-sm);
+ padding: ${isMobile ? '12px' : '14px'};
+ margin-bottom: ${isMobile ? '8px' : '10px'};
+ color: var(--tg-dl-text);
+ transition: all 0.2s ease;
+ border: 1px solid transparent;
+ }
+ .tg-dl-item:hover {
+ background: rgba(120, 120, 128, 0.12);
+ border-color: var(--tg-dl-border);
+ transform: translateY(-1px);
+ }
+
+ /* 下载项头部 */
+ .tg-dl-item-header {
+ display: flex;
+ justify-content: space-between;
+ align-items: flex-start;
+ margin-bottom: 10px;
+ gap: 10px;
+ }
+ .tg-dl-filename {
+ font-size: ${isMobile ? '14px' : '15px'};
+ font-weight: 500;
+ word-break: break-word;
+ flex: 1;
+ line-height: 1.4;
+ color: var(--tg-dl-text);
+ letter-spacing: -0.01em;
+ }
+ .tg-dl-actions {
+ display: flex;
+ gap: 6px;
+ flex-shrink: 0;
+ }
+
+ /* 小按钮 - 苹果风格 */
+ .tg-dl-btn-small {
+ background: var(--tg-dl-danger);
+ color: white;
+ border: none;
+ padding: 6px 10px;
+ border-radius: 8px;
+ cursor: pointer;
+ font-size: 11px;
+ font-weight: 500;
+ min-width: 36px;
+ min-height: 28px;
+ touch-action: manipulation;
+ transition: all 0.2s ease;
+ }
+ .tg-dl-btn-small:hover {
+ opacity: 0.85;
+ transform: scale(1.05);
+ }
+ .tg-dl-btn-small:active {
+ transform: scale(0.95);
+ }
+ .tg-dl-btn-pause {
+ background: var(--tg-dl-warning);
+ }
+ .tg-dl-btn-pause:hover {
+ opacity: 0.85;
+ }
+
+ /* 进度条 - 苹果风格 */
+ .tg-dl-progress-bar {
+ width: 100%;
+ height: 4px;
+ background: rgba(120, 120, 128, 0.16);
+ border-radius: 2px;
+ overflow: hidden;
+ }
+ .tg-dl-progress-fill {
+ height: 100%;
+ background: linear-gradient(90deg, var(--tg-dl-primary), #5AC8FA);
+ width: 0%;
+ border-radius: 2px;
+ transition: width 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+ }
+ .tg-dl-status {
+ font-size: ${isMobile ? '12px' : '13px'};
+ color: var(--tg-dl-text-secondary);
+ margin-top: 8px;
+ display: flex;
+ justify-content: space-between;
+ flex-wrap: wrap;
+ gap: 4px;
+ font-weight: 400;
+ }
+
+ /* 切换按钮 - 浮动胶囊按钮 */
+ .tg-dl-toggle {
+ position: fixed;
+ bottom: ${isMobile ? '16px' : '24px'};
+ right: ${isMobile ? '16px' : '24px'};
+ background: rgba(0, 122, 255, 0.92);
+ color: white;
+ border: none;
+ padding: ${isMobile ? '10px 18px' : '12px 22px'};
+ border-radius: 24px;
+ cursor: pointer;
+ font-size: ${isMobile ? '14px' : '15px'};
+ font-weight: 600;
+ z-index: 10000;
+ box-shadow: 0 4px 20px rgba(0, 122, 255, 0.35);
+ display: flex;
+ align-items: center;
+ gap: 8px;
+ touch-action: manipulation;
+ min-height: ${isMobile ? '44px' : '48px'};
+ backdrop-filter: blur(20px) saturate(180%);
+ -webkit-backdrop-filter: blur(20px) saturate(180%);
+ transition: all 0.3s cubic-bezier(0.25, 0.1, 0.25, 1);
+ letter-spacing: -0.01em;
+ }
+ .tg-dl-toggle:hover {
+ background: rgba(0, 122, 255, 1);
+ transform: translateY(-2px);
+ box-shadow: 0 8px 28px rgba(0, 122, 255, 0.45);
+ }
+ .tg-dl-toggle:active {
+ transform: translateY(0) scale(0.98);
+ }
+ .tg-dl-toggle.compact {
+ padding: 12px;
+ border-radius: 50%;
+ min-width: 48px;
+ min-height: 48px;
+ justify-content: center;
+ }
+
+ /* 徽章 - 苹果风格红点 */
+ .tg-dl-badge {
+ background: var(--tg-dl-danger);
+ color: white;
+ border-radius: 50%;
+ min-width: 20px;
+ height: 20px;
+ display: flex;
+ align-items: center;
+ justify-content: center;
+ font-size: 11px;
+ font-weight: 600;
+ padding: 0 6px;
+ box-shadow: 0 2px 6px rgba(255, 59, 48, 0.4);
+ }
+ .tg-dl-badge.hidden {
+ display: none;
+ }
+
+ /* 移动端适配 */
+ @media (max-width: 768px) {
+ .tg-dl-panel {
+ border-radius: 24px 24px 0 0;
+ bottom: 0;
+ left: 0;
+ right: 0;
+ max-height: 65vh;
+ }
+ .tg-dl-panel.active {
+ animation: panelSlideUp 0.35s cubic-bezier(0.32, 0.72, 0, 1);
+ }
+ @keyframes panelSlideUp {
+ from {
+ transform: translateY(100%);
+ }
+ to {
+ transform: translateY(0);
+ }
+ }
+ .tg-dl-toggle {
+ padding: 10px 16px;
+ font-size: 14px;
+ border-radius: 22px;
+ }
+ }
+
+ /* iOS 安全区域适配 */
+ @supports (padding-bottom: env(safe-area-inset-bottom)) {
+ .tg-dl-toggle {
+ bottom: calc(${isMobile ? '16px' : '24px'} + env(safe-area-inset-bottom));
+ }
+ .tg-dl-panel {
+ padding-bottom: env(safe-area-inset-bottom);
+ }
+ }
+
+ /* 防止iOS橡皮筋效果 */
+ .tg-dl-panel, .tg-dl-list {
+ overscroll-behavior: contain;
+ }
+
+ /* 空状态提示 */
+ .tg-dl-empty {
+ text-align: center;
+ padding: 40px 20px;
+ color: var(--tg-dl-text-secondary);
+ font-size: 15px;
+ }
+
+ /* 旋转动画 */
+ @keyframes spin {
+ from {
+ transform: rotate(0deg);
+ }
+ to {
+ transform: rotate(360deg);
+ }
+ }
+ `;
             document.head.appendChild(style);
 
             // 面板
             const panel = document.createElement('div');
             panel.className = 'tg-dl-panel';
             panel.id = 'tg-dl-panel';
-            panel.innerHTML = `
-                <div class="tg-dl-header">
-                    <h3>📥 下载管理</h3>
-                    <button class="tg-dl-close" aria-label="关闭">×</button>
-                </div>
-                <div class="tg-dl-list" id="tg-dl-list"></div>
-            `;
+ panel.innerHTML = `
+ <div class="tg-dl-header">
+ <h3>下载</h3>
+ <button class="tg-dl-close" aria-label="关闭">×</button>
+ </div>
+ <div class="tg-dl-list" id="tg-dl-list"></div>
+ `;
             document.body.appendChild(panel);
 
-            // 切换按钮
-            const toggle = document.createElement('button');
-            toggle.className = 'tg-dl-toggle';
-            toggle.innerHTML = '⬇️ 下载 <span class="tg-dl-badge hidden" id="tg-badge">0</span>';
-            toggle.setAttribute('aria-label', '打开下载面板');
-            document.body.appendChild(toggle);
+// 切换按钮
+ const toggle = document.createElement('button');
+ toggle.className = 'tg-dl-toggle';
+ toggle.innerHTML = `
+ <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+ <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+ <polyline points="7 10 12 15 17 10"/>
+ <line x1="12" y1="15" x2="12" y2="3"/>
+ </svg>
+ <span>下载</span>
+ <span class="tg-dl-badge hidden" id="tg-badge">0</span>
+ `;
+ toggle.setAttribute('aria-label', '打开下载面板');
+ document.body.appendChild(toggle);
 
-            // 绑定事件
-            const closeBtn = panel.querySelector('.tg-dl-close');
-            ResourceManager.addEventListener(closeBtn, 'click', () => {
-                panel.classList.remove('active');
-            });
+// 绑定事件
+ const closeBtn = panel.querySelector('.tg-dl-close');
+ const header = panel.querySelector('.tg-dl-header');
 
-            ResourceManager.addEventListener(toggle, 'click', () => {
-                panel.classList.toggle('active');
-            });
+ // 关闭按钮
+ ResourceManager.addEventListener(closeBtn, 'click', (e) => {
+ e.stopPropagation();
+ panel.classList.remove('active');
+ });
 
-            // 点击外部关闭面板（移动端优化）
-            if (isMobile) {
-                ResourceManager.addEventListener(document, 'click', (e) => {
-                    if (!panel.contains(e.target) && !toggle.contains(e.target)) {
-                        panel.classList.remove('active');
-                    }
-                });
-            }
+ // 切换按钮
+ ResourceManager.addEventListener(toggle, 'click', () => {
+ panel.classList.toggle('active');
+ });
+
+ // 移动端：点击头部可以关闭面板
+ if (isMobile) {
+ ResourceManager.addEventListener(header, 'click', (e) => {
+ if (e.target === header || e.target.closest('h3')) {
+ panel.classList.remove('active');
+ }
+ });
+
+ // 点击外部关闭面板
+ ResourceManager.addEventListener(document, 'click', (e) => {
+ if (!panel.contains(e.target) && !toggle.contains(e.target)) {
+ panel.classList.remove('active');
+ }
+ });
+
+ // 向下滑动手势关闭面板
+ let touchStartY = 0;
+ ResourceManager.addEventListener(panel, 'touchstart', (e) => {
+ touchStartY = e.touches[0].clientY;
+ }, { passive: true });
+
+ ResourceManager.addEventListener(panel, 'touchmove', (e) => {
+ const touchY = e.touches[0].clientY;
+ const diff = touchY - touchStartY;
+ if (diff > 50 && panel.scrollTop === 0) {
+ panel.classList.remove('active');
+ }
+ }, { passive: true });
+ }
 
             state.ui = {
                 panel,
@@ -642,22 +855,32 @@
             const item = document.createElement('div');
             item.className = 'tg-dl-item';
             item.id = `task-${id}`;
-            item.innerHTML = `
-                <div class="tg-dl-item-header">
-                    <div class="tg-dl-filename">${this.escapeHtml(filename)}</div>
-                    <div class="tg-dl-actions">
-                        <button class="tg-dl-btn-small tg-dl-btn-pause" data-task="${id}" data-action="pause" aria-label="暂停">⏸</button>
-                        <button class="tg-dl-btn-small" data-task="${id}" data-action="cancel" aria-label="取消">✕</button>
-                    </div>
-                </div>
-                <div class="tg-dl-progress-bar">
-                    <div class="tg-dl-progress-fill" id="progress-${id}"></div>
-                </div>
-                <div class="tg-dl-status">
-                    <span id="status-${id}">准备中...</span>
-                    <span id="speed-${id}"></span>
-                </div>
-            `;
+item.innerHTML = `
+ <div class="tg-dl-item-header">
+ <div class="tg-dl-filename">${this.escapeHtml(filename)}</div>
+ <div class="tg-dl-actions">
+ <button class="tg-dl-btn-small tg-dl-btn-pause" data-task="${id}" data-action="pause" aria-label="暂停">
+ <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+ <rect x="6" y="4" width="4" height="16"/>
+ <rect x="14" y="4" width="4" height="16"/>
+ </svg>
+ </button>
+ <button class="tg-dl-btn-small" data-task="${id}" data-action="cancel" aria-label="取消">
+ <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+ <line x1="18" y1="6" x2="6" y2="18"/>
+ <line x1="6" y1="6" x2="18" y2="18"/>
+ </svg>
+ </button>
+ </div>
+ </div>
+ <div class="tg-dl-progress-bar">
+ <div class="tg-dl-progress-fill" id="progress-${id}"></div>
+ </div>
+ <div class="tg-dl-status">
+ <span id="status-${id}">准备中...</span>
+ <span id="speed-${id}"></span>
+ </div>
+ `;
 
             // 绑定事件
             const pauseBtn = item.querySelector('[data-action="pause"]');
@@ -697,11 +920,14 @@
             if (fill) fill.style.width = progress + '%';
             if (statusEl) statusEl.textContent = status;
             if (speedEl) speedEl.textContent = speed || '';
-            if (pauseBtn) {
-                const task = state.tasks.get(id);
-                pauseBtn.textContent = task?.paused ? '▶' : '⏸';
-                pauseBtn.setAttribute('aria-label', task?.paused ? '继续' : '暂停');
-            }
+if (pauseBtn) {
+ const task = state.tasks.get(id);
+ const isPaused = task?.paused;
+ pauseBtn.innerHTML = isPaused
+ ? `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>`
+ : `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
+ pauseBtn.setAttribute('aria-label', isPaused ? '继续' : '暂停');
+ }
         },
 
         removeTask(id) {
@@ -1119,10 +1345,17 @@
 
             container.classList.add('tg-media-wrap');
 
-            const btn = document.createElement('button');
-            btn.className = 'tg-dl-btn';
-            btn.innerHTML = '⬇️ 下载';
-            btn.setAttribute('aria-label', '下载视频');
+const btn = document.createElement('button');
+ btn.className = 'tg-dl-btn';
+ btn.innerHTML = `
+ <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 4px; vertical-align: -2px;">
+ <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+ <polyline points="7 10 12 15 17 10"/>
+ <line x1="12" y1="15" x2="12" y2="3"/>
+ </svg>
+ 下载
+ `;
+ btn.setAttribute('aria-label', '下载视频');
 
             const handleClick = async (e) => {
                 e.stopPropagation();
@@ -1133,19 +1366,38 @@
                     return;
                 }
 
-                btn.disabled = true;
-                btn.innerHTML = '⏳';
-                state.downloadingVideos.add(video);
+btn.disabled = true;
+ btn.innerHTML = `
+ <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="animation: spin 1s linear infinite; margin-right: 4px; vertical-align: -2px;">
+ <line x1="12" y1="2" x2="12" y2="6"/>
+ <line x1="12" y1="18" x2="12" y2="22"/>
+ <line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/>
+ <line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/>
+ <line x1="2" y1="12" x2="6" y2="12"/>
+ <line x1="18" y1="12" x2="22" y2="12"/>
+ <line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/>
+ <line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/>
+ </svg>
+ 下载中...
+ `;
+ state.downloadingVideos.add(video);
 
                 try {
                     await Downloader.start(video);
                 } catch (err) {
                     ErrorHandler.handle('下载过程异常', err);
-                } finally {
-                    btn.disabled = false;
-                    btn.innerHTML = '⬇️ 下载';
-                    state.downloadingVideos.delete(video);
-                }
+} finally {
+ btn.disabled = false;
+ btn.innerHTML = `
+ <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 4px; vertical-align: -2px;">
+ <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+ <polyline points="7 10 12 15 17 10"/>
+ <line x1="12" y1="15" x2="12" y2="3"/>
+ </svg>
+ 下载
+ `;
+ state.downloadingVideos.delete(video);
+ }
             };
 
             ResourceManager.addEventListener(btn, 'click', handleClick);

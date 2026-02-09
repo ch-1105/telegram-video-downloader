@@ -1,42 +1,42 @@
-# 贡献指南
+# Contributing Guide
 
-感谢您对 Telegram Web Video Downloader 的兴趣！
+Thank you for your interest in Telegram Web Video Downloader!
 
-## 如何贡献
+## How to Contribute
 
-### 提交 Issue
+### Submitting Issues
 
-如果您发现 bug 或有新功能建议：
+If you find a bug or have a feature suggestion:
 
-1. 先搜索是否已有类似 Issue
-2. 使用 Issue 模板提交
-3. 提供详细的复现步骤
+1. Search for existing similar Issues first
+2. Submit using the Issue template
+3. Provide detailed reproduction steps
 
-### 提交代码
+### Submitting Code
 
-1. Fork 本仓库
-2. 创建特性分支 (`git checkout -b feature/amazing-feature`)
-3. 提交更改 (`git commit -m 'Add some amazing feature'`)
-4. 推送到分支 (`git push origin feature/amazing-feature`)
-5. 创建 Pull Request
+1. Fork this repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Create a Pull Request
 
-### 代码规范
+### Code Style
 
-- 使用单引号
-- 缩进使用 2 个空格
-- 添加必要的注释
-- 保持与现有代码风格一致
+- Use single quotes
+- Use 2 spaces for indentation
+- Add necessary comments
+- Maintain consistency with existing code style
 
-## 开发
+## Development
 
-由于这是用户脚本，直接编辑 `.user.js` 文件即可。
+Since this is a userscript, simply edit the `.user.js` file.
 
-### 测试
+### Testing
 
-1. 在浏览器中安装 Tampermonkey
-2. 添加本地脚本进行测试
-3. 测试 Telegram Web 的各种视频类型
+1. Install Tampermonkey in your browser
+2. Add the local script for testing
+3. Test various video types on Telegram Web
 
-## 联系方式
+## Contact
 
-如有疑问，欢迎通过 Issue 讨论。
+Feel free to discuss via Issues if you have any questions.
