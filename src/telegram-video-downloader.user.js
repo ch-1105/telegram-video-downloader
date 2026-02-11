@@ -58,92 +58,8 @@ const CONFIG = {
         isDestroyed: false // 页面卸载标记
     };
 
-    // ============ 调试工具（移动端诊断） ============
-const DebugTools = {
-  enabled: true,
-
-  log(level, ...args) {
-    if (!this.enabled) return;
-    const prefix = '[TG DL]';
-    switch(level) {
-      case 'error': console.error(prefix, ...args); break;
-      case 'warn': console.warn(prefix, ...args); break;
-      default: console.log(prefix, ...args);
-    }
-  },
-
-  // 检查脚本是否运行
-  checkEnvironment() {
-    const info = {
-      userAgent: navigator.userAgent.substring(0, 100),
-      platform: navigator.platform,
-      url: location.href,
-      readyState: document.readyState,
-      hasBody: !!document.body,
-      isMobile: CONFIG.IS_MOBILE,
-      timestamp: new Date().toISOString()
-    };
-    this.log('info', '📱 环境检测:', info);
-    return info;
-  },
-
-  // 在页面显示调试信息（移动端看不到控制台）
-  showDebugPanel() {
-    if (document.getElementById('tg-dl-debug')) return;
-
-    const panel = document.createElement('div');
-    panel.id = 'tg-dl-debug';
-    panel.style.cssText = `
-      position: fixed;
-      bottom: 100px;
-      left: 10px;
-      right: 10px;
-      max-height: 200px;
-      background: rgba(0,0,0,0.9);
-      color: #0f0;
-      font-family: monospace;
-      font-size: 11px;
-      padding: 10px;
-      border-radius: 8px;
-      z-index: 99999;
-      overflow-y: auto;
-      white-space: pre-wrap;
-      word-break: break-all;
-    `;
-
-    const header = document.createElement('div');
-    header.textContent = '🔧 TG Downloader 调试 (点击关闭)';
-    header.style.cssText = 'color: #ff0; margin-bottom: 5px; cursor: pointer;';
-    header.onclick = () => panel.remove();
-    panel.appendChild(header);
-
-    const content = document.createElement('div');
-    content.id = 'tg-dl-debug-content';
-    panel.appendChild(content);
-
-    document.body.appendChild(panel);
-    return content;
-  },
-
-  panel(msg) {
-    if (!CONFIG.IS_MOBILE) return;
-    const content = document.getElementById('tg-dl-debug-content') || this.showDebugPanel();
-    if (content) {
-      const line = document.createElement('div');
-      line.textContent = `${new Date().toLocaleTimeString()} ${msg}`;
-      content.appendChild(line);
-      content.scrollTop = content.scrollHeight;
-    }
-  }
-};
-
-// 全局错误捕获（移动端调试）
-window.onerror = function(msg, url, line, col, error) {
-  DebugTools.log('error', `❌ 错误: ${msg} @ ${line}:${col}`);
-  DebugTools.panel(`❌ ${msg}`);
-  return false;
-};
-    const ErrorHandler = {
+// ============ 全局错误处理 ============
+const ErrorHandler = {
         handle(context, error, fallback = null) {
             console.error(`[TG DL] ${context}:`, error);
             // 可以在这里添加错误上报逻辑
@@ -1525,14 +1441,9 @@ const Downloader = {
 function init() {
   if (state.isDestroyed) return;
 
-  DebugTools.log('info', '🚀 初始化开始...');
-  DebugTools.panel('初始化中...');
-
-  // 检查环境
-  const env = DebugTools.checkEnvironment();
-  if (!env.hasBody) {
-    DebugTools.log('warn', '⏳ document.body 不存在，等待...');
-    DebugTools.panel('等待页面加载...');
+  // 等待 body 存在（移动端可能需要）
+  if (!document.body) {
+    console.log('[TG DL] 等待 document.body...');
     setTimeout(init, 500);
     return;
   }
@@ -1574,14 +1485,12 @@ function init() {
     `;
     btn.setAttribute('aria-label', '下载视频');
 
-    DebugTools.panel(`✅ 添加下载按钮`);
-
     const handleClick = async (e) => {
       e.stopPropagation();
       e.preventDefault();
 
       if (btn.disabled || state.downloadingVideos.has(video)) {
-        DebugTools.log('info', '该视频正在下载中，忽略重复点击');
+        console.log('[TG DL] 该视频正在下载中，忽略重复点击');
         return;
       }
 
@@ -1600,13 +1509,11 @@ function init() {
         下载中...
       `;
       state.downloadingVideos.add(video);
-      DebugTools.panel('开始下载...');
 
       try {
         await Downloader.start(video);
       } catch (err) {
         ErrorHandler.handle('下载过程异常', err);
-        DebugTools.panel(`❌ 下载失败: ${err.message}`);
       } finally {
         btn.disabled = false;
         btn.innerHTML = `
@@ -1632,22 +1539,16 @@ function init() {
     if (scanTimeout) clearTimeout(scanTimeout);
     scanTimeout = setTimeout(() => {
       const videos = document.querySelectorAll('video');
-      DebugTools.log('info', `扫描到 ${videos.length} 个视频元素 (尝试 #${scanAttempts + 1})`);
-
-      if (videos.length > 0) {
-        DebugTools.panel(`📹 找到 ${videos.length} 个视频`);
-      }
 
       videos.forEach(addButton);
 
       // 移动端：如果没有找到视频，增加重试
       if (videos.length === 0 && scanAttempts < 50) {
         scanAttempts++;
-        DebugTools.panel(`⏳ 等待视频加载... (${scanAttempts}/50)`);
+        console.log(`[TG DL] 等待视频加载... (${scanAttempts}/50)`);
         setTimeout(scan, 500);
       } else if (videos.length === 0 && scanAttempts >= 50) {
-        DebugTools.panel('⚠️ 未找到视频元素');
-        DebugTools.log('warn', '多次扫描未找到视频元素，可能页面结构不同');
+        console.warn('[TG DL] 多次扫描未找到视频元素，可能页面结构不同');
       }
     }, CONFIG.OBSERVER_DEBOUNCE);
   }
@@ -1669,10 +1570,9 @@ function init() {
       ResourceManager.addObserver(observer);
       observer.observe(document.body, { childList: true, subtree: true });
       scan();
-      DebugTools.log('info', 'MutationObserver 已启动');
-      DebugTools.panel('✅ 脚本已启动');
+      console.log('[TG DL] MutationObserver 已启动');
     } else {
-      DebugTools.log('info', '等待 document.body...');
+      console.log('[TG DL] 等待 document.body...');
       setTimeout(waitForBody, 100);
     }
   }
@@ -1684,7 +1584,7 @@ function init() {
     state.capturedUrls = state.capturedUrls.filter(c => now - c.captureTime < 300000);
   }, 60000);
 
-  DebugTools.log('info', '已加载', CONFIG.IS_MOBILE ? '(移动端模式)' : '(桌面端模式)');
+  console.log('[TG DL] 已加载', CONFIG.IS_MOBILE ? '(移动端模式)' : '(桌面端模式)');
 }
 
     if (document.readyState === 'loading') {
