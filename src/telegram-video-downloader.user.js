@@ -12,17 +12,36 @@
 (function() {
     'use strict';
 
-    // ============ 配置 ============
-    const CONFIG = {
-        CHUNK_SIZE: 512 * 1024,
-        RETRY_COUNT: 3,
-        TIMEOUT: 3000,
-        CONCURRENT_DOWNLOADS: 3, // 并发下载数
-        MAX_BUFFER_SIZE: 50 * 1024 * 1024, // 50MB 缓冲区限制
-        OBSERVER_DEBOUNCE: 100, // MutationObserver 防抖延迟
-        IS_MOBILE: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent),
-        UI_SCALE: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ? 1.2 : 1
-    };
+// ============ 配置 ============
+const CONFIG = {
+  // 动态块大小：根据文件大小自动调整
+  getChunkSize(fileSize) {
+    if (fileSize < 10 * 1024 * 1024) return 512 * 1024; // <10MB: 512KB
+    if (fileSize < 100 * 1024 * 1024) return 2 * 1024 * 1024; // <100MB: 2MB
+    if (fileSize < 1024 * 1024 * 1024) return 5 * 1024 * 1024; // <1GB: 5MB
+    return 10 * 1024 * 1024; // >=1GB: 10MB
+  },
+
+  RETRY_COUNT: 3,
+  TIMEOUT: 15000, // 增加到15秒，给大文件更多时间
+
+  // 并发下载数：桌面端6个，手机端4个（平衡速度和稳定性）
+  get CONCURRENT_DOWNLOADS() {
+    return CONFIG.IS_MOBILE ? 4 : 6;
+  },
+
+  // 分批次合并大小：手机端20MB，桌面端100MB
+  get MERGE_BATCH_SIZE() {
+    return CONFIG.IS_MOBILE ? 20 * 1024 * 1024 : 100 * 1024 * 1024;
+  },
+
+  // 流式下载阈值：大于此值使用流式下载
+  STREAMING_THRESHOLD: 50 * 1024 * 1024, // 50MB
+
+  OBSERVER_DEBOUNCE: 100,
+  IS_MOBILE: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent),
+  UI_SCALE: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ? 1.2 : 1
+};
 
     // ============ 状态管理 ============
     const state = {
@@ -1168,133 +1187,232 @@ if (pauseBtn) {
         }
     }
 
-    // ============ 下载逻辑（支持并发） ============
-    const Downloader = {
-        async downloadChunk(url, start, end, retryCount = 0) {
-            try {
-                const response = await _origFetch(url, {
-                    headers: { 'Range': `bytes=${start}-${end}` }
-                });
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                const blob = await response.blob();
-                const arrayBuffer = await blob.arrayBuffer();
-                return new Uint8Array(arrayBuffer);
-            } catch (e) {
-                if (retryCount < CONFIG.RETRY_COUNT - 1) {
-                    await new Promise(r => setTimeout(r, 500 * (retryCount + 1)));
-                    return this.downloadChunk(url, start, end, retryCount + 1);
-                }
-                throw e;
+// ============ 下载逻辑（支持并发 + 流式合并） ============
+const Downloader = {
+  // 带超时的fetch
+  async fetchWithTimeout(url, options, timeout = CONFIG.TIMEOUT) {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeout);
+    try {
+      const response = await _origFetch(url, {
+        ...options,
+        signal: controller.signal
+      });
+      clearTimeout(id);
+      return response;
+    } catch (error) {
+      clearTimeout(id);
+      throw error;
+    }
+  },
+
+  // 优化后的分块下载，支持取消和暂停
+  async downloadChunk(url, start, end, retryCount = 0) {
+    try {
+      const response = await this.fetchWithTimeout(url, {
+        headers: { 'Range': `bytes=${start}-${end}` }
+      }, CONFIG.TIMEOUT);
+
+      if (!response.ok && response.status !== 206) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const blob = await response.blob();
+      const arrayBuffer = await blob.arrayBuffer();
+      return new Uint8Array(arrayBuffer);
+    } catch (e) {
+      // 指数退避 + 抖动，避免雪崩
+      if (retryCount < CONFIG.RETRY_COUNT) {
+        const delay = Math.min(1000 * Math.pow(2, retryCount), 10000);
+        const jitter = Math.random() * 1000;
+        await new Promise(r => setTimeout(r, delay + jitter));
+        return this.downloadChunk(url, start, end, retryCount + 1);
+      }
+      throw e;
+    }
+  },
+
+  // 并发下载管理器（真正的流水线，非阻塞）
+  async downloadConcurrent(task, chunksToDownload, onChunkDownloaded) {
+    const concurrency = CONFIG.CONCURRENT_DOWNLOADS;
+    const executing = new Set();
+    const results = new Map();
+    let index = 0;
+
+    // 填充并发槽
+    async function fillSlots() {
+      while (index < chunksToDownload.length && executing.size < concurrency) {
+        const chunk = chunksToDownload[index++];
+        const promise = (async () => {
+          try {
+            await task.waitIfPaused();
+            if (task.cancelled) throw new Error('已取消');
+
+            const data = await Downloader.downloadChunk(
+              task.info.url,
+              chunk.start,
+              chunk.end
+            );
+
+            await task.waitIfPaused();
+            if (task.cancelled) throw new Error('已取消');
+
+            results.set(chunk.index, data);
+            task.downloaded += data.length;
+
+            // 回调通知进度
+            if (onChunkDownloaded) {
+              onChunkDownloaded(chunk.index, data);
             }
-        },
+          } catch (e) {
+            throw e;
+          }
+        })();
 
-        async downloadChunksConcurrent(task, chunksToDownload) {
-            const downloadPromises = chunksToDownload.map(async ({ index, start, end }) => {
-                if (task.chunks.has(index)) {
-                    return { index, data: task.chunks.get(index) };
-                }
+        executing.add(promise);
+        promise.then(() => executing.delete(promise)).catch(() => executing.delete(promise));
+      }
+    }
 
-                await task.waitIfPaused();
-                if (task.cancelled) throw new Error('已取消');
+    // 主循环：保持并发槽满
+    while (results.size < chunksToDownload.length) {
+      await task.waitIfPaused();
+      if (task.cancelled) throw new Error('已取消');
 
-                const data = await this.downloadChunk(task.info.url, start, end);
+      // 填充空槽
+      await fillSlots();
 
-                await task.waitIfPaused();
-                if (task.cancelled) throw new Error('已取消');
+      // 等待至少一个完成
+      if (executing.size > 0) {
+        await Promise.race(executing);
+      }
 
-                task.chunks.set(index, data);
-                task.downloaded += data.length;
+      // 短暂yield，避免阻塞UI
+      if (executing.size >= concurrency) {
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
 
-                return { index, data };
-            });
+    // 按顺序返回结果
+    return chunksToDownload.map(c => results.get(c.index));
+  },
 
-            return Promise.all(downloadPromises);
-        },
+  // 流式下载：分批次合并，避免内存溢出
+  async downloadWithStreaming(task, info, onProgress) {
+    const chunkSize = CONFIG.getChunkSize(info.size);
+    const totalChunks = Math.ceil(info.size / chunkSize);
+    const chunksPerBatch = Math.max(1, Math.floor(CONFIG.MERGE_BATCH_SIZE / chunkSize));
 
-        async start(videoElement) {
-            const taskId = ++state.taskId;
-            const captureStartTime = Date.now();
+    const tempBlobs = [];
+    let currentBatch = [];
+    let currentBatchSize = 0;
+    let completedChunks = 0;
 
-            const info = await VideoInfo.capture(videoElement);
-            if (!info) {
-                alert('未找到视频信息，请播放视频后再试');
-                return;
-            }
+    // 准备分块列表
+    const chunksToDownload = [];
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * chunkSize;
+      const end = Math.min(start + chunkSize - 1, info.size - 1);
+      chunksToDownload.push({ index: i, start, end });
+    }
 
-            const context = VideoInfo.getContext(videoElement);
-            const filename = VideoInfo.generateName(info, context, captureStartTime);
+    // 优先级排序：先下载头部和尾部（对视频播放更有用）
+    chunksToDownload.sort((a, b) => {
+      const aPriority = (a.start === 0 || a.end === info.size - 1) ? 0 : 1;
+      const bPriority = (b.start === 0 || b.end === info.size - 1) ? 0 : 1;
+      return aPriority - bPriority;
+    });
 
-            console.log('[TG DL] 开始下载:', filename);
+    // 并发下载并分批合并
+    await this.downloadConcurrent(task, chunksToDownload, (index, data) => {
+      currentBatch.push({ index, data });
+      currentBatchSize += data.length;
+      completedChunks++;
 
-            const task = new DownloadTask(taskId, info, filename);
-            state.tasks.set(taskId, task);
-            UI.createTask(taskId, filename);
+      // 报告进度
+      if (onProgress) {
+        const progress = (completedChunks / totalChunks) * 100;
+        const elapsed = (Date.now() - task.startTime) / 1000;
+        const speed = elapsed > 0 ? (task.downloaded / elapsed / 1024 / 1024).toFixed(2) + ' MB/s' : '';
+        onProgress(progress, `下载中: ${progress.toFixed(1)}%`,
+          `${(task.downloaded/1024/1024).toFixed(2)}MB / ${(info.size/1024/1024).toFixed(2)}MB ${speed}`);
+      }
 
-            const totalChunks = Math.ceil(info.size / CONFIG.CHUNK_SIZE);
-            const chunksToDownload = [];
-            for (let i = 0; i < totalChunks; i++) {
-                const start = i * CONFIG.CHUNK_SIZE;
-                const end = Math.min(start + CONFIG.CHUNK_SIZE - 1, info.size - 1);
-                chunksToDownload.push({ index: i, start, end });
-            }
+      // 批次满或最后一个：合并并释放内存
+      if (currentBatch.length >= chunksPerBatch || completedChunks >= totalChunks) {
+        // 按原始顺序排序
+        currentBatch.sort((a, b) => a.index - b.index);
+        const batchBlob = new Blob(currentBatch.map(c => c.data), { type: info.mimeType });
+        tempBlobs.push(batchBlob);
 
-            try {
-                const batchSize = CONFIG.CONCURRENT_DOWNLOADS;
-                for (let i = 0; i < chunksToDownload.length; i += batchSize) {
-                    if (task.cancelled) {
-                        UI.removeTask(taskId);
-                        return;
-                    }
+        // 立即释放这批内存（关键！）
+        currentBatch = [];
+        currentBatchSize = 0;
 
-                    await task.waitIfPaused();
+        // 尝试触发GC
+        if (window.gc) window.gc();
 
-                    const batch = chunksToDownload.slice(i, i + batchSize);
-                    await this.downloadChunksConcurrent(task, batch);
+        // 报告批次信息
+        if (onProgress && tempBlobs.length > 0) {
+          onProgress((completedChunks / totalChunks) * 100,
+            `已缓存 ${tempBlobs.length} 批...`, '');
+        }
+      }
+    });
 
-                    const progress = (task.downloaded / info.size) * 100;
-                    const elapsed = (Date.now() - task.startTime) / 1000;
-                    const speed = elapsed > 0 ? (task.downloaded / elapsed / 1024 / 1024).toFixed(2) + ' MB/s' : '';
+    // 最终合并（Blob是引用，不复制数据）
+    return tempBlobs.length === 1 ? tempBlobs[0] : new Blob(tempBlobs, { type: info.mimeType });
+  },
 
-                    UI.updateTask(
-                        taskId,
-                        progress,
-                        `下载中: ${progress.toFixed(1)}%`,
-                        `${(task.downloaded/1024/1024).toFixed(2)}MB / ${(info.size/1024/1024).toFixed(2)}MB ${speed}`
-                    );
+  async start(videoElement) {
+    const taskId = ++state.taskId;
+    const captureStartTime = Date.now();
 
-                    if (i > 0 && i % (batchSize * 3) === 0) {
-                        await new Promise(r => setTimeout(r, 50));
-                    }
-                }
+    const info = await VideoInfo.capture(videoElement);
+    if (!info) {
+      alert('未找到视频信息，请播放视频后再试');
+      return;
+    }
 
-                if (task.cancelled) {
-                    UI.removeTask(taskId);
-                    return;
-                }
+    const context = VideoInfo.getContext(videoElement);
+    const filename = VideoInfo.generateName(info, context, captureStartTime);
 
-                UI.updateTask(taskId, 99, '正在合并...', '');
+    console.log('[TG DL] 开始下载:', filename, '大小:', (info.size/1024/1024).toFixed(2) + 'MB');
 
-                const chunks = [];
-                for (let i = 0; i < totalChunks; i++) {
-                    chunks.push(task.chunks.get(i));
-                }
+    const task = new DownloadTask(taskId, info, filename);
+    state.tasks.set(taskId, task);
+    UI.createTask(taskId, filename);
 
-                const blob = new Blob(chunks, { type: info.mimeType });
+    try {
+      // 使用流式下载（内存安全）
+      const blob = await this.downloadWithStreaming(task, info,
+        (progress, status, speed) => {
+          UI.updateTask(taskId, progress, status, speed);
+        }
+      );
 
-                if (blob.size < info.size * 0.95) {
-                    throw new Error(`文件不完整: ${blob.size}/${info.size}`);
-                }
+      if (task.cancelled) {
+        UI.removeTask(taskId);
+        return;
+      }
 
-                this.save(blob, filename);
-                UI.updateTask(taskId, 100, '✅ 完成', '');
-                setTimeout(() => UI.removeTask(taskId), 3000);
+      // 完整性检查
+      if (blob.size < info.size * 0.95) {
+        throw new Error(`文件不完整: ${blob.size}/${info.size}`);
+      }
 
-            } catch (e) {
-                console.error('[TG DL] 下载失败:', e);
-                UI.updateTask(taskId, (task.downloaded / info.size) * 100, '下载失败: ' + e.message, '');
-                setTimeout(() => UI.removeTask(taskId), 5000);
-            }
-        },
+      UI.updateTask(taskId, 99, '正在保存...', '');
+      this.save(blob, filename);
+
+      UI.updateTask(taskId, 100, '✅ 完成', '');
+      setTimeout(() => UI.removeTask(taskId), 3000);
+
+    } catch (e) {
+      console.error('[TG DL] 下载失败:', e);
+      UI.updateTask(taskId, (task.downloaded / info.size) * 100, '下载失败: ' + e.message, '');
+      setTimeout(() => UI.removeTask(taskId), 5000);
+    }
+  },
 
         save(blob, filename) {
             try {
