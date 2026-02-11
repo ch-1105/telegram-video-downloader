@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name Telegram Web Video Downloader - Clean
 // @namespace http://tampermonkey.net/
-// @version 9.2
+// @version 9.5
 // @description 简洁高效的 Telegram 视频下载器（支持手机端）
 // @author You
 // @match https://web.telegram.org/*
@@ -15,36 +15,26 @@
 (function() {
     'use strict';
 
-// ============ 配置 ============
-const CONFIG = {
-  // 动态块大小：根据文件大小自动调整
-  getChunkSize(fileSize) {
-    if (fileSize < 10 * 1024 * 1024) return 512 * 1024; // <10MB: 512KB
-    if (fileSize < 100 * 1024 * 1024) return 2 * 1024 * 1024; // <100MB: 2MB
-    if (fileSize < 1024 * 1024 * 1024) return 5 * 1024 * 1024; // <1GB: 5MB
-    return 10 * 1024 * 1024; // >=1GB: 10MB
-  },
-
-  RETRY_COUNT: 3,
-  TIMEOUT: 15000, // 增加到15秒，给大文件更多时间
-
-  // 并发下载数：桌面端6个，手机端4个（平衡速度和稳定性）
-  get CONCURRENT_DOWNLOADS() {
-    return CONFIG.IS_MOBILE ? 4 : 6;
-  },
-
-  // 分批次合并大小：手机端20MB，桌面端100MB
-  get MERGE_BATCH_SIZE() {
-    return CONFIG.IS_MOBILE ? 20 * 1024 * 1024 : 100 * 1024 * 1024;
-  },
-
-  // 流式下载阈值：大于此值使用流式下载
-  STREAMING_THRESHOLD: 50 * 1024 * 1024, // 50MB
-
-  OBSERVER_DEBOUNCE: 100,
-  IS_MOBILE: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent),
-  UI_SCALE: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ? 1.2 : 1
-};
+    // ============ 配置 ============
+    const CONFIG = {
+        // 动态块大小：Telegram Service Worker 最大返回 2MB，分块不能超过此值
+        getChunkSize(fileSize) {
+            if (fileSize < 10 * 1024 * 1024) return 512 * 1024;       // <10MB: 512KB
+            return 1024 * 1024;                                        // >=10MB: 1MB
+        },
+        RETRY_COUNT: 3,
+        TIMEOUT: 15000,
+        get CONCURRENT_DOWNLOADS() {
+            return CONFIG.IS_MOBILE ? 4 : 6;
+        },
+        // 分批合并阈值：每积累这么多字节就合并一次释放内存
+        get MERGE_BATCH_SIZE() {
+            return CONFIG.IS_MOBILE ? 20 * 1024 * 1024 : 100 * 1024 * 1024;
+        },
+        OBSERVER_DEBOUNCE: 100,
+        IS_MOBILE: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent),
+        UI_SCALE: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ? 1.2 : 1
+    };
 
     // ============ 状态管理 ============
     const state = {
@@ -1190,338 +1180,200 @@ if (pauseBtn) {
         }
     }
 
-// ============ 下载逻辑（支持并发 + 流式合并） ============
-const Downloader = {
-  // 带超时的fetch
-  async fetchWithTimeout(url, options, timeout = CONFIG.TIMEOUT) {
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), timeout);
-    try {
-      const response = await _origFetch(url, {
-        ...options,
-        signal: controller.signal
-      });
-      clearTimeout(id);
-      return response;
-    } catch (error) {
-      clearTimeout(id);
-      throw error;
-    }
-  },
-
-  // 优化后的分块下载，支持取消和暂停
-  async downloadChunk(url, start, end, retryCount = 0) {
-    try {
-      const response = await this.fetchWithTimeout(url, {
-        headers: { 'Range': `bytes=${start}-${end}` }
-      }, CONFIG.TIMEOUT);
-
-      if (!response.ok && response.status !== 206) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-
-      // 检查服务器是否支持 Range（可能返回整个文件）
-      const contentRange = response.headers.get('Content-Range');
-      const contentLength = response.headers.get('Content-Length');
-      const expectedSize = end - start + 1;
-
-      // 如果没有 Content-Range，检查是否返回了完整文件
-      if (response.status === 200 && !contentRange) {
-        console.warn(`[TG DL] 服务器不支持 Range 请求，返回完整文件`);
-        // 这种情况应该特殊处理，但我们继续尝试读取
-      }
-
-      const blob = await response.blob();
-      const arrayBuffer = await blob.arrayBuffer();
-      const data = new Uint8Array(arrayBuffer);
-
-      // 验证数据大小（关键修复！）
-      // 服务器可能返回的数据比请求的少（网络问题、服务器限制等）
-      if (data.length === 0) {
-        throw new Error('返回数据为空');
-      }
-
-      // 允许 10% 的误差（有些服务器可能返回略少的数据）
-      // 但如果误差太大，说明有问题
-      if (data.length < expectedSize * 0.9) {
-        console.warn(`[TG DL] 数据不完整: ${data.length}/${expectedSize} bytes`);
-        // 对于最后一个分块，允许较小的数据
-        if (end < url.length) { // 不是最后一块
-          throw new Error(`数据不完整: ${data.length}/${expectedSize}`);
-        }
-      }
-
-      return data;
-    } catch (e) {
-      // 指数退避 + 抖动，避免雪崩
-      if (retryCount < CONFIG.RETRY_COUNT) {
-        const delay = Math.min(1000 * Math.pow(2, retryCount), 10000);
-        const jitter = Math.random() * 1000;
-        console.log(`[TG DL] 分块下载失败 (${start}-${end})，${delay}ms 后重试 (${retryCount + 1}/${CONFIG.RETRY_COUNT})`);
-        await new Promise(r => setTimeout(r, delay + jitter));
-        return this.downloadChunk(url, start, end, retryCount + 1);
-      }
-      throw new Error(`分块下载失败 (${start}-${end}): ${e.message}`);
-    }
-  },
-
-  // 并发下载管理器（真正的流水线，非阻塞）
-  async downloadConcurrent(task, chunksToDownload, onChunkDownloaded) {
-    const concurrency = CONFIG.CONCURRENT_DOWNLOADS;
-    const executing = new Set();
-    const results = new Map();
-    let index = 0;
-    let failedCount = 0; // 记录失败次数
-
-    // 填充并发槽
-    async function fillSlots() {
-      while (index < chunksToDownload.length && executing.size < concurrency) {
-        const chunk = chunksToDownload[index++];
-        const promise = (async () => {
-          try {
-            await task.waitIfPaused();
-            if (task.cancelled) throw new Error('已取消');
-
-            const data = await Downloader.downloadChunk(
-              task.info.url,
-              chunk.start,
-              chunk.end
-            );
-
-            await task.waitIfPaused();
-            if (task.cancelled) throw new Error('已取消');
-
-            results.set(chunk.index, data);
-            task.downloaded += data.length;
-
-            // 回调通知进度
-            if (onChunkDownloaded) {
-              onChunkDownloaded(chunk.index, data);
-            }
-
-            return { success: true, index: chunk.index };
-          } catch (e) {
-            // 关键修复：记录失败，但不立即抛出
-            // 让其他分块继续下载
-            console.error(`[TG DL] 分块 ${chunk.index} 下载失败:`, e.message);
-            failedCount++;
-            return { success: false, index: chunk.index, error: e, chunk };
-          }
-        })();
-
-        executing.add(promise);
-        promise.then(() => executing.delete(promise)).catch(() => executing.delete(promise));
-      }
-    }
-
-    // 主循环：保持并发槽满
-    while (results.size < chunksToDownload.length - failedCount) {
-      await task.waitIfPaused();
-      if (task.cancelled) throw new Error('已取消');
-
-      // 填充空槽
-      await fillSlots();
-
-      // 等待至少一个完成
-      if (executing.size > 0) {
-        try {
-          const result = await Promise.race(executing);
-          // 检查是否是失败的
-          if (result && !result.success) {
-            // 重试这个失败的分块
-            console.log(`[TG DL] 准备重试分块 ${result.index}`);
-            // 将该分块重新加入队列
-            const failedChunk = result.chunk;
-            // 找到它在原数组中的位置
-            const originalIndex = chunksToDownload.findIndex(c => c.index === failedChunk.index);
-            if (originalIndex !== -1) {
-              // 延迟后重试
-              await new Promise(r => setTimeout(r, 2000));
-              if (!task.cancelled) {
-                const newIndex = chunksToDownload.length;
-                chunksToDownload.push({
-                  ...failedChunk,
-                  _retry: true
+    // ============ 下载逻辑（批处理并发 + 分批内存释放） ============
+    const Downloader = {
+        // 单分块下载，带数据完整性校验
+        async downloadChunk(url, start, end, fileSize, retryCount = 0) {
+            try {
+                // 不使用 AbortController — Telegram Service Worker 不兼容 signal
+                // 用 Promise.race 实现超时
+                const fetchPromise = _origFetch(url, {
+                    headers: { 'Range': `bytes=${start}-${end}` }
                 });
-                console.log(`[TG DL] 分块 ${failedChunk.index} 已重新加入队列`);
-              }
+                const timeoutPromise = new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('请求超时')), CONFIG.TIMEOUT)
+                );
+                const response = await Promise.race([fetchPromise, timeoutPromise]);
+
+                if (!response.ok && response.status !== 206) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                const blob = await response.blob();
+                const arrayBuffer = await blob.arrayBuffer();
+                const data = new Uint8Array(arrayBuffer);
+                const expectedSize = end - start + 1;
+
+                // 校验：数据不能为空
+                if (data.length === 0) {
+                    throw new Error(`返回数据为空 (期望 ${expectedSize} bytes)`);
+                }
+
+                // 校验：数据大小不能偏差太大（最后一块允许较小）
+                const isLastChunk = (end >= fileSize - 1);
+                if (!isLastChunk && data.length < expectedSize * 0.9) {
+                    throw new Error(`数据不完整: ${data.length}/${expectedSize}`);
+                }
+
+                return data;
+            } catch (e) {
+                // 指数退避 + 抖动
+                if (retryCount < CONFIG.RETRY_COUNT) {
+                    const delay = Math.min(1000 * Math.pow(2, retryCount), 10000);
+                    const jitter = Math.random() * 1000;
+                    console.warn(`[TG DL] 分块 (${start}-${end}) 失败: ${e.message}，${Math.round(delay)}ms 后重试 (${retryCount + 1}/${CONFIG.RETRY_COUNT})`);
+                    await new Promise(r => setTimeout(r, delay + jitter));
+                    return this.downloadChunk(url, start, end, fileSize, retryCount + 1);
+                }
+                throw new Error(`分块下载失败 (${start}-${end}): ${e.message}`);
             }
-          }
-        } catch (e) {
-          // 捕获 Promise.race 中的错误
-          console.error('[TG DL] Promise.race 错误:', e);
-        }
-      }
+        },
 
-      // 短暂yield，避免阻塞UI
-      if (executing.size >= concurrency) {
-        await new Promise(r => setTimeout(r, 0));
-      }
+        // 批处理并发下载：一批全部完成再下一批，逻辑简单可靠
+        async downloadBatchConcurrent(task, batchChunks) {
+            const downloadPromises = batchChunks.map(async ({ index, start, end }) => {
+                if (task.chunks.has(index)) {
+                    return { index, data: task.chunks.get(index) };
+                }
 
-      // 如果全部尝试完成但仍有失败，抛出错误
-      if (executing.size === 0 && index >= chunksToDownload.length && results.size < chunksToDownload.length - failedCount) {
-        throw new Error(`下载失败: ${failedCount} 个分块未完成`);
-      }
-    }
+                await task.waitIfPaused();
+                if (task.cancelled) throw new Error('已取消');
 
-    // 按顺序返回结果（关键：确保顺序正确）
-    const orderedResults = [];
-    for (const chunk of chunksToDownload) {
-      if (!chunk._retry) { // 跳过重试标记的
-        const data = results.get(chunk.index);
-        if (data) {
-          orderedResults.push({ index: chunk.index, data });
-        }
-      }
-    }
+                const data = await this.downloadChunk(task.info.url, start, end, task.info.size);
 
-    // 按索引排序
-    orderedResults.sort((a, b) => a.index - b.index);
+                await task.waitIfPaused();
+                if (task.cancelled) throw new Error('已取消');
 
-    return orderedResults;
-  },
+                task.chunks.set(index, data);
+                task.downloaded += data.length;
 
-  // 流式下载：分批次合并，避免内存溢出
-  async downloadWithStreaming(task, info, onProgress) {
-    const chunkSize = CONFIG.getChunkSize(info.size);
-    const totalChunks = Math.ceil(info.size / chunkSize);
-    const chunksPerBatch = Math.max(1, Math.floor(CONFIG.MERGE_BATCH_SIZE / chunkSize));
+                return { index, data };
+            });
 
-    const tempBlobs = [];
-    let currentBatch = [];
-    let currentBatchSize = 0;
-    let completedChunks = 0;
-    let actualDownloadedBytes = 0; // 关键修复：记录实际下载字节数
+            return Promise.all(downloadPromises);
+        },
 
-    // 准备分块列表
-    const chunksToDownload = [];
-    for (let i = 0; i < totalChunks; i++) {
-      const start = i * chunkSize;
-      const end = Math.min(start + chunkSize - 1, info.size - 1);
-      chunksToDownload.push({ index: i, start, end });
-    }
+        async start(videoElement) {
+            const taskId = ++state.taskId;
+            const captureStartTime = Date.now();
 
-    // 优先级排序：先下载头部和尾部（对视频播放更有用）
-    chunksToDownload.sort((a, b) => {
-      const aPriority = (a.start === 0 || a.end === info.size - 1) ? 0 : 1;
-      const bPriority = (b.start === 0 || b.end === info.size - 1) ? 0 : 1;
-      return aPriority - bPriority;
-    });
+            const info = await VideoInfo.capture(videoElement);
+            if (!info) {
+                alert('未找到视频信息，请播放视频后再试');
+                return;
+            }
 
-    // 并发下载并分批合并
-    const downloadedChunks = await this.downloadConcurrent(task, chunksToDownload, (index, data) => {
-      currentBatch.push({ index, data });
-      currentBatchSize += data.length;
-      actualDownloadedBytes += data.length; // 关键：累加实际字节数
-      completedChunks++;
+            const context = VideoInfo.getContext(videoElement);
+            const filename = VideoInfo.generateName(info, context, captureStartTime);
 
-      // 报告进度
-      if (onProgress) {
-        const progress = (completedChunks / totalChunks) * 100;
-        const elapsed = (Date.now() - task.startTime) / 1000;
-        const speed = elapsed > 0 ? (task.downloaded / elapsed / 1024 / 1024).toFixed(2) + ' MB/s' : '';
-        onProgress(progress, `下载中: ${progress.toFixed(1)}%`,
-          `${(task.downloaded/1024/1024).toFixed(2)}MB / ${(info.size/1024/1024).toFixed(2)}MB ${speed}`);
-      }
+            console.log('[TG DL] 开始下载:', filename, '大小:', (info.size / 1024 / 1024).toFixed(2) + 'MB');
 
-      // 批次满或最后一个：合并并释放内存
-      if (currentBatch.length >= chunksPerBatch || completedChunks >= totalChunks) {
-        // 按原始顺序排序
-        currentBatch.sort((a, b) => a.index - b.index);
-        const batchBlob = new Blob(currentBatch.map(c => c.data), { type: info.mimeType });
-        tempBlobs.push(batchBlob);
+            const task = new DownloadTask(taskId, info, filename);
+            state.tasks.set(taskId, task);
+            UI.createTask(taskId, filename);
 
-        // 立即释放这批内存（关键！）
-        currentBatch = [];
-        currentBatchSize = 0;
+            const chunkSize = CONFIG.getChunkSize(info.size);
+            const totalChunks = Math.ceil(info.size / chunkSize);
+            const batchSize = CONFIG.CONCURRENT_DOWNLOADS;
+            // 每积累多少个分块就合并一次释放内存
+            const mergeEvery = Math.max(batchSize, Math.floor(CONFIG.MERGE_BATCH_SIZE / chunkSize));
 
-        // 尝试触发GC
-        if (window.gc) window.gc();
+            const chunksToDownload = [];
+            for (let i = 0; i < totalChunks; i++) {
+                const start = i * chunkSize;
+                const end = Math.min(start + chunkSize - 1, info.size - 1);
+                chunksToDownload.push({ index: i, start, end });
+            }
 
-        // 报告批次信息
-        if (onProgress && tempBlobs.length > 0) {
-          onProgress((completedChunks / totalChunks) * 100,
-            `已缓存 ${tempBlobs.length} 批...`, '');
-        }
-      }
-    });
+            try {
+                // 有序的 Blob 片段列表，最终按顺序拼接
+                const orderedBlobs = [];
+                // 当前待合并的分块索引范围
+                let mergeFromIndex = 0;
 
-    // 关键修复：验证下载的数据量
-    console.log(`[TG DL] 实际下载: ${actualDownloadedBytes} bytes, 期望: ${info.size} bytes`);
+                for (let i = 0; i < chunksToDownload.length; i += batchSize) {
+                    if (task.cancelled) {
+                        UI.removeTask(taskId);
+                        return;
+                    }
 
-    if (actualDownloadedBytes === 0) {
-      throw new Error('下载失败：未获取到任何数据');
-    }
+                    await task.waitIfPaused();
 
-    if (actualDownloadedBytes < info.size * 0.95) {
-      throw new Error(`下载不完整: ${actualDownloadedBytes}/${info.size} bytes (${(actualDownloadedBytes/info.size*100).toFixed(1)}%)`);
-    }
+                    const batch = chunksToDownload.slice(i, i + batchSize);
+                    await this.downloadBatchConcurrent(task, batch);
 
-    // 如果实际下载量比预期多（不应该发生，但检查一下）
-    if (actualDownloadedBytes > info.size * 1.05) {
-      console.warn(`[TG DL] 下载数据异常偏多: ${actualDownloadedBytes}/${info.size}`);
-    }
+                    // 更新进度
+                    const progress = (task.downloaded / info.size) * 100;
+                    const elapsed = (Date.now() - task.startTime) / 1000;
+                    const speed = elapsed > 0 ? (task.downloaded / elapsed / 1024 / 1024).toFixed(2) + ' MB/s' : '';
+                    UI.updateTask(
+                        taskId,
+                        progress,
+                        `下载中: ${progress.toFixed(1)}%`,
+                        `${(task.downloaded / 1024 / 1024).toFixed(2)}MB / ${(info.size / 1024 / 1024).toFixed(2)}MB ${speed}`
+                    );
 
-    // 最终合并（Blob是引用，不复制数据）
-    const finalBlob = tempBlobs.length === 1 ? tempBlobs[0] : new Blob(tempBlobs, { type: info.mimeType });
+                    // 检查是否该合并释放内存了
+                    const downloadedSoFar = i + batch.length;
+                    const shouldMerge = (downloadedSoFar - mergeFromIndex >= mergeEvery) || (downloadedSoFar >= chunksToDownload.length);
 
-    // 最后验证 Blob 大小
-    if (finalBlob.size !== actualDownloadedBytes) {
-      console.warn(`[TG DL] Blob 大小不匹配: ${finalBlob.size} vs ${actualDownloadedBytes}`);
-    }
+                    if (shouldMerge) {
+                        // 按顺序从 Map 中取出这一段的分块，合并为 Blob
+                        const blobParts = [];
+                        for (let j = mergeFromIndex; j < downloadedSoFar; j++) {
+                            const data = task.chunks.get(j);
+                            if (data) {
+                                blobParts.push(data);
+                            }
+                        }
 
-    return finalBlob;
-  },
+                        if (blobParts.length > 0) {
+                            const partBlob = new Blob(blobParts, { type: info.mimeType });
+                            orderedBlobs.push(partBlob);
 
-  async start(videoElement) {
-    const taskId = ++state.taskId;
-    const captureStartTime = Date.now();
+                            // 释放 Uint8Array 引用
+                            for (let j = mergeFromIndex; j < downloadedSoFar; j++) {
+                                task.chunks.delete(j);
+                            }
+                        }
 
-    const info = await VideoInfo.capture(videoElement);
-    if (!info) {
-      alert('未找到视频信息，请播放视频后再试');
-      return;
-    }
+                        mergeFromIndex = downloadedSoFar;
+                    }
 
-    const context = VideoInfo.getContext(videoElement);
-    const filename = VideoInfo.generateName(info, context, captureStartTime);
+                    // 定期 yield，避免阻塞 UI
+                    if (i > 0 && i % (batchSize * 3) === 0) {
+                        await new Promise(r => setTimeout(r, 50));
+                    }
+                }
 
-    console.log('[TG DL] 开始下载:', filename, '大小:', (info.size/1024/1024).toFixed(2) + 'MB');
+                if (task.cancelled) {
+                    UI.removeTask(taskId);
+                    return;
+                }
 
-    const task = new DownloadTask(taskId, info, filename);
-    state.tasks.set(taskId, task);
-    UI.createTask(taskId, filename);
+                UI.updateTask(taskId, 99, '正在合并...', '');
 
-    try {
-      // 使用流式下载（内存安全）
-      const blob = await this.downloadWithStreaming(task, info,
-        (progress, status, speed) => {
-          UI.updateTask(taskId, progress, status, speed);
-        }
-      );
+                // 最终合并
+                const blob = orderedBlobs.length === 1
+                    ? orderedBlobs[0]
+                    : new Blob(orderedBlobs, { type: info.mimeType });
 
-      if (task.cancelled) {
-        UI.removeTask(taskId);
-        return;
-      }
+                console.log(`[TG DL] 实际下载: ${task.downloaded} bytes, 期望: ${info.size} bytes, Blob: ${blob.size} bytes`);
 
-      // 完整性检查
-      if (blob.size < info.size * 0.95) {
-        throw new Error(`文件不完整: ${blob.size}/${info.size}`);
-      }
+                if (blob.size < info.size * 0.95) {
+                    throw new Error(`文件不完整: ${blob.size}/${info.size}`);
+                }
 
-      UI.updateTask(taskId, 99, '正在保存...', '');
-      this.save(blob, filename);
+                this.save(blob, filename);
+                UI.updateTask(taskId, 100, '完成', '');
+                setTimeout(() => UI.removeTask(taskId), 3000);
 
-      UI.updateTask(taskId, 100, '✅ 完成', '');
-      setTimeout(() => UI.removeTask(taskId), 3000);
-
-    } catch (e) {
-      console.error('[TG DL] 下载失败:', e);
-      UI.updateTask(taskId, (task.downloaded / info.size) * 100, '下载失败: ' + e.message, '');
-      setTimeout(() => UI.removeTask(taskId), 5000);
-    }
-  },
+            } catch (e) {
+                console.error('[TG DL] 下载失败:', e);
+                UI.updateTask(taskId, (task.downloaded / info.size) * 100, '下载失败: ' + e.message, '');
+                setTimeout(() => UI.removeTask(taskId), 5000);
+            }
+        },
 
         save(blob, filename) {
             try {
@@ -1545,83 +1397,42 @@ const Downloader = {
 
 // ============ 初始化 ============
 function init() {
-  if (state.isDestroyed) return;
-
-  // 等待 body 存在（移动端可能需要）
-  if (!document.body) {
-    console.log('[TG DL] 等待 document.body...');
-    setTimeout(init, 500);
-    return;
-  }
-
-  UI.init();
-
-  function cleanup() {
-    ResourceManager.cleanup();
-  }
-
-  ResourceManager.addEventListener(window, 'beforeunload', cleanup);
-  ResourceManager.addEventListener(window, 'pagehide', cleanup);
-
-  ResourceManager.addEventListener(document, 'visibilitychange', () => {
-    if (document.visibilityState === 'hidden') {
-      // 页面不可见时可暂停非关键操作
-    }
-  });
-
-  function addButton(video) {
     if (state.isDestroyed) return;
-    if (video.dataset.tgDlBtnAdded) return;
-    video.dataset.tgDlBtnAdded = 'true';
 
-    const container = video.closest('[class*="media"], [class*="video"]') || video.parentElement;
-    if (!container) return;
-
-    container.classList.add('tg-media-wrap');
-
-    const btn = document.createElement('button');
-    btn.className = 'tg-dl-btn';
-    btn.innerHTML = `
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 4px; vertical-align: -2px;">
-        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-        <polyline points="7 10 12 15 17 10"/>
-        <line x1="12" y1="15" x2="12" y2="3"/>
-      </svg>
-      下载
-    `;
-    btn.setAttribute('aria-label', '下载视频');
-
-    const handleClick = async (e) => {
-      e.stopPropagation();
-      e.preventDefault();
-
-      if (btn.disabled || state.downloadingVideos.has(video)) {
-        console.log('[TG DL] 该视频正在下载中，忽略重复点击');
+    // 等待 body 存在（移动端可能延迟）
+    if (!document.body) {
+        console.log('[TG DL] 等待 document.body...');
+        setTimeout(init, 500);
         return;
-      }
+    }
 
-      btn.disabled = true;
-      btn.innerHTML = `
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="animation: spin 1s linear infinite; margin-right: 4px; vertical-align: -2px;">
-          <line x1="12" y1="2" x2="12" y2="6"/>
-          <line x1="12" y1="18" x2="12" y2="22"/>
-          <line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/>
-          <line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/>
-          <line x1="2" y1="12" x2="6" y2="12"/>
-          <line x1="18" y1="12" x2="22" y2="12"/>
-          <line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/>
-          <line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/>
-        </svg>
-        下载中...
-      `;
-      state.downloadingVideos.add(video);
+    UI.init();
 
-      try {
-        await Downloader.start(video);
-      } catch (err) {
-        ErrorHandler.handle('下载过程异常', err);
-      } finally {
-        btn.disabled = false;
+    function cleanup() {
+        ResourceManager.cleanup();
+    }
+
+    ResourceManager.addEventListener(window, 'beforeunload', cleanup);
+    ResourceManager.addEventListener(window, 'pagehide', cleanup);
+
+    ResourceManager.addEventListener(document, 'visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+            // 页面不可见时可暂停非关键操作
+        }
+    });
+
+    function addButton(video) {
+        if (state.isDestroyed) return;
+        if (video.dataset.tgDlBtnAdded) return;
+        video.dataset.tgDlBtnAdded = 'true';
+
+        const container = video.closest('[class*="media"], [class*="video"]') || video.parentElement;
+        if (!container) return;
+
+        container.classList.add('tg-media-wrap');
+
+        const btn = document.createElement('button');
+        btn.className = 'tg-dl-btn';
         btn.innerHTML = `
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 4px; vertical-align: -2px;">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -1630,67 +1441,95 @@ function init() {
           </svg>
           下载
         `;
-        state.downloadingVideos.delete(video);
-      }
-    };
+        btn.setAttribute('aria-label', '下载视频');
 
-    ResourceManager.addEventListener(btn, 'click', handleClick);
-    container.appendChild(btn);
-  }
+        const handleClick = async (e) => {
+            e.stopPropagation();
+            e.preventDefault();
 
-  let scanTimeout = null;
-  let scanAttempts = 0;
-  function scan() {
-    if (state.isDestroyed) return;
-    if (scanTimeout) clearTimeout(scanTimeout);
-    scanTimeout = setTimeout(() => {
-      const videos = document.querySelectorAll('video');
+            if (btn.disabled || state.downloadingVideos.has(video)) {
+                console.log('[TG DL] 该视频正在下载中，忽略重复点击');
+                return;
+            }
 
-      videos.forEach(addButton);
+            btn.disabled = true;
+            btn.innerHTML = `
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="animation: spin 1s linear infinite; margin-right: 4px; vertical-align: -2px;">
+                <line x1="12" y1="2" x2="12" y2="6"/>
+                <line x1="12" y1="18" x2="12" y2="22"/>
+                <line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/>
+                <line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/>
+                <line x1="2" y1="12" x2="6" y2="12"/>
+                <line x1="18" y1="12" x2="22" y2="12"/>
+                <line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/>
+                <line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/>
+              </svg>
+              下载中...
+            `;
+            state.downloadingVideos.add(video);
 
-      // 移动端：如果没有找到视频，增加重试
-      if (videos.length === 0 && scanAttempts < 50) {
-        scanAttempts++;
-        console.log(`[TG DL] 等待视频加载... (${scanAttempts}/50)`);
-        setTimeout(scan, 500);
-      } else if (videos.length === 0 && scanAttempts >= 50) {
-        console.warn('[TG DL] 多次扫描未找到视频元素，可能页面结构不同');
-      }
-    }, CONFIG.OBSERVER_DEBOUNCE);
-  }
+            try {
+                await Downloader.start(video);
+            } catch (err) {
+                ErrorHandler.handle('下载过程异常', err);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = `
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 4px; vertical-align: -2px;">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="7 10 12 15 17 10"/>
+                    <line x1="12" y1="15" x2="12" y2="3"/>
+                  </svg>
+                  下载
+                `;
+                state.downloadingVideos.delete(video);
+            }
+        };
 
-  // 等待 body 存在（移动端可能需要）
-  function waitForBody() {
-    if (document.body) {
-      const observer = new MutationObserver((mutations) => {
-        // 只在有实际变化时扫描
+        ResourceManager.addEventListener(btn, 'click', handleClick);
+        container.appendChild(btn);
+    }
+
+    let scanTimeout = null;
+    let scanAttempts = 0;
+    function scan() {
+        if (state.isDestroyed) return;
+        if (scanTimeout) clearTimeout(scanTimeout);
+        scanTimeout = setTimeout(() => {
+            const videos = document.querySelectorAll('video');
+            videos.forEach(addButton);
+
+            // 移动端：如果没有找到视频，增加重试
+            if (videos.length === 0 && scanAttempts < 50) {
+                scanAttempts++;
+                setTimeout(scan, 500);
+            }
+        }, CONFIG.OBSERVER_DEBOUNCE);
+    }
+
+    // 智能 MutationObserver：只在有 video 元素变化时扫描
+    const observer = new MutationObserver((mutations) => {
         const hasVideoChanges = mutations.some(m =>
-          Array.from(m.addedNodes).some(n =>
-            n.nodeName === 'VIDEO' || (n.querySelector && n.querySelector('video'))
-          )
+            Array.from(m.addedNodes).some(n =>
+                n.nodeName === 'VIDEO' || (n.querySelector && n.querySelector('video'))
+            )
         );
         if (hasVideoChanges) {
-          scan();
+            scan();
         }
-      });
-      ResourceManager.addObserver(observer);
-      observer.observe(document.body, { childList: true, subtree: true });
-      scan();
-      console.log('[TG DL] MutationObserver 已启动');
-    } else {
-      console.log('[TG DL] 等待 document.body...');
-      setTimeout(waitForBody, 100);
-    }
-  }
-  waitForBody();
+    });
+    ResourceManager.addObserver(observer);
+    observer.observe(document.body, { childList: true, subtree: true });
 
-  setInterval(() => {
-    if (state.isDestroyed) return;
-    const now = Date.now();
-    state.capturedUrls = state.capturedUrls.filter(c => now - c.captureTime < 300000);
-  }, 60000);
+    scan();
 
-  console.log('[TG DL] 已加载', CONFIG.IS_MOBILE ? '(移动端模式)' : '(桌面端模式)');
+    setInterval(() => {
+        if (state.isDestroyed) return;
+        const now = Date.now();
+        state.capturedUrls = state.capturedUrls.filter(c => now - c.captureTime < 300000);
+    }, 60000);
+
+    console.log('[TG DL v9.5] 已加载', CONFIG.IS_MOBILE ? '(移动端模式)' : '(桌面端模式)');
 }
 
     if (document.readyState === 'loading') {
