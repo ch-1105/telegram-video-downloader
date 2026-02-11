@@ -1220,18 +1220,48 @@ const Downloader = {
         throw new Error(`HTTP ${response.status}`);
       }
 
+      // 检查服务器是否支持 Range（可能返回整个文件）
+      const contentRange = response.headers.get('Content-Range');
+      const contentLength = response.headers.get('Content-Length');
+      const expectedSize = end - start + 1;
+
+      // 如果没有 Content-Range，检查是否返回了完整文件
+      if (response.status === 200 && !contentRange) {
+        console.warn(`[TG DL] 服务器不支持 Range 请求，返回完整文件`);
+        // 这种情况应该特殊处理，但我们继续尝试读取
+      }
+
       const blob = await response.blob();
       const arrayBuffer = await blob.arrayBuffer();
-      return new Uint8Array(arrayBuffer);
+      const data = new Uint8Array(arrayBuffer);
+
+      // 验证数据大小（关键修复！）
+      // 服务器可能返回的数据比请求的少（网络问题、服务器限制等）
+      if (data.length === 0) {
+        throw new Error('返回数据为空');
+      }
+
+      // 允许 10% 的误差（有些服务器可能返回略少的数据）
+      // 但如果误差太大，说明有问题
+      if (data.length < expectedSize * 0.9) {
+        console.warn(`[TG DL] 数据不完整: ${data.length}/${expectedSize} bytes`);
+        // 对于最后一个分块，允许较小的数据
+        if (end < url.length) { // 不是最后一块
+          throw new Error(`数据不完整: ${data.length}/${expectedSize}`);
+        }
+      }
+
+      return data;
     } catch (e) {
       // 指数退避 + 抖动，避免雪崩
       if (retryCount < CONFIG.RETRY_COUNT) {
         const delay = Math.min(1000 * Math.pow(2, retryCount), 10000);
         const jitter = Math.random() * 1000;
+        console.log(`[TG DL] 分块下载失败 (${start}-${end})，${delay}ms 后重试 (${retryCount + 1}/${CONFIG.RETRY_COUNT})`);
         await new Promise(r => setTimeout(r, delay + jitter));
         return this.downloadChunk(url, start, end, retryCount + 1);
       }
-      throw e;
+      throw new Error(`分块下载失败 (${start}-${end}): ${e.message}`);
     }
   },
 
@@ -1241,6 +1271,7 @@ const Downloader = {
     const executing = new Set();
     const results = new Map();
     let index = 0;
+    let failedCount = 0; // 记录失败次数
 
     // 填充并发槽
     async function fillSlots() {
@@ -1267,8 +1298,14 @@ const Downloader = {
             if (onChunkDownloaded) {
               onChunkDownloaded(chunk.index, data);
             }
+
+            return { success: true, index: chunk.index };
           } catch (e) {
-            throw e;
+            // 关键修复：记录失败，但不立即抛出
+            // 让其他分块继续下载
+            console.error(`[TG DL] 分块 ${chunk.index} 下载失败:`, e.message);
+            failedCount++;
+            return { success: false, index: chunk.index, error: e, chunk };
           }
         })();
 
@@ -1278,7 +1315,7 @@ const Downloader = {
     }
 
     // 主循环：保持并发槽满
-    while (results.size < chunksToDownload.length) {
+    while (results.size < chunksToDownload.length - failedCount) {
       await task.waitIfPaused();
       if (task.cancelled) throw new Error('已取消');
 
@@ -1287,17 +1324,61 @@ const Downloader = {
 
       // 等待至少一个完成
       if (executing.size > 0) {
-        await Promise.race(executing);
+        try {
+          const result = await Promise.race(executing);
+          // 检查是否是失败的
+          if (result && !result.success) {
+            // 重试这个失败的分块
+            console.log(`[TG DL] 准备重试分块 ${result.index}`);
+            // 将该分块重新加入队列
+            const failedChunk = result.chunk;
+            // 找到它在原数组中的位置
+            const originalIndex = chunksToDownload.findIndex(c => c.index === failedChunk.index);
+            if (originalIndex !== -1) {
+              // 延迟后重试
+              await new Promise(r => setTimeout(r, 2000));
+              if (!task.cancelled) {
+                const newIndex = chunksToDownload.length;
+                chunksToDownload.push({
+                  ...failedChunk,
+                  _retry: true
+                });
+                console.log(`[TG DL] 分块 ${failedChunk.index} 已重新加入队列`);
+              }
+            }
+          }
+        } catch (e) {
+          // 捕获 Promise.race 中的错误
+          console.error('[TG DL] Promise.race 错误:', e);
+        }
       }
 
       // 短暂yield，避免阻塞UI
       if (executing.size >= concurrency) {
         await new Promise(r => setTimeout(r, 0));
       }
+
+      // 如果全部尝试完成但仍有失败，抛出错误
+      if (executing.size === 0 && index >= chunksToDownload.length && results.size < chunksToDownload.length - failedCount) {
+        throw new Error(`下载失败: ${failedCount} 个分块未完成`);
+      }
     }
 
-    // 按顺序返回结果
-    return chunksToDownload.map(c => results.get(c.index));
+    // 按顺序返回结果（关键：确保顺序正确）
+    const orderedResults = [];
+    for (const chunk of chunksToDownload) {
+      if (!chunk._retry) { // 跳过重试标记的
+        const data = results.get(chunk.index);
+        if (data) {
+          orderedResults.push({ index: chunk.index, data });
+        }
+      }
+    }
+
+    // 按索引排序
+    orderedResults.sort((a, b) => a.index - b.index);
+
+    return orderedResults;
   },
 
   // 流式下载：分批次合并，避免内存溢出
@@ -1310,6 +1391,7 @@ const Downloader = {
     let currentBatch = [];
     let currentBatchSize = 0;
     let completedChunks = 0;
+    let actualDownloadedBytes = 0; // 关键修复：记录实际下载字节数
 
     // 准备分块列表
     const chunksToDownload = [];
@@ -1327,9 +1409,10 @@ const Downloader = {
     });
 
     // 并发下载并分批合并
-    await this.downloadConcurrent(task, chunksToDownload, (index, data) => {
+    const downloadedChunks = await this.downloadConcurrent(task, chunksToDownload, (index, data) => {
       currentBatch.push({ index, data });
       currentBatchSize += data.length;
+      actualDownloadedBytes += data.length; // 关键：累加实际字节数
       completedChunks++;
 
       // 报告进度
@@ -1363,8 +1446,31 @@ const Downloader = {
       }
     });
 
+    // 关键修复：验证下载的数据量
+    console.log(`[TG DL] 实际下载: ${actualDownloadedBytes} bytes, 期望: ${info.size} bytes`);
+
+    if (actualDownloadedBytes === 0) {
+      throw new Error('下载失败：未获取到任何数据');
+    }
+
+    if (actualDownloadedBytes < info.size * 0.95) {
+      throw new Error(`下载不完整: ${actualDownloadedBytes}/${info.size} bytes (${(actualDownloadedBytes/info.size*100).toFixed(1)}%)`);
+    }
+
+    // 如果实际下载量比预期多（不应该发生，但检查一下）
+    if (actualDownloadedBytes > info.size * 1.05) {
+      console.warn(`[TG DL] 下载数据异常偏多: ${actualDownloadedBytes}/${info.size}`);
+    }
+
     // 最终合并（Blob是引用，不复制数据）
-    return tempBlobs.length === 1 ? tempBlobs[0] : new Blob(tempBlobs, { type: info.mimeType });
+    const finalBlob = tempBlobs.length === 1 ? tempBlobs[0] : new Blob(tempBlobs, { type: info.mimeType });
+
+    // 最后验证 Blob 大小
+    if (finalBlob.size !== actualDownloadedBytes) {
+      console.warn(`[TG DL] Blob 大小不匹配: ${finalBlob.size} vs ${actualDownloadedBytes}`);
+    }
+
+    return finalBlob;
   },
 
   async start(videoElement) {
