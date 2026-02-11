@@ -5,6 +5,9 @@
 // @description 简洁高效的 Telegram 视频下载器（支持手机端）
 // @author You
 // @match https://web.telegram.org/*
+// @match https://web.telegram.org/k/*
+// @match https://web.telegram.org/a/*
+// @match https://web.telegram.org/z/*
 // @grant none
 // @run-at document-start
 // ==/UserScript==
@@ -55,7 +58,91 @@ const CONFIG = {
         isDestroyed: false // 页面卸载标记
     };
 
-    // ============ 全局错误处理 ============
+    // ============ 调试工具（移动端诊断） ============
+const DebugTools = {
+  enabled: true,
+
+  log(level, ...args) {
+    if (!this.enabled) return;
+    const prefix = '[TG DL]';
+    switch(level) {
+      case 'error': console.error(prefix, ...args); break;
+      case 'warn': console.warn(prefix, ...args); break;
+      default: console.log(prefix, ...args);
+    }
+  },
+
+  // 检查脚本是否运行
+  checkEnvironment() {
+    const info = {
+      userAgent: navigator.userAgent.substring(0, 100),
+      platform: navigator.platform,
+      url: location.href,
+      readyState: document.readyState,
+      hasBody: !!document.body,
+      isMobile: CONFIG.IS_MOBILE,
+      timestamp: new Date().toISOString()
+    };
+    this.log('info', '📱 环境检测:', info);
+    return info;
+  },
+
+  // 在页面显示调试信息（移动端看不到控制台）
+  showDebugPanel() {
+    if (document.getElementById('tg-dl-debug')) return;
+
+    const panel = document.createElement('div');
+    panel.id = 'tg-dl-debug';
+    panel.style.cssText = `
+      position: fixed;
+      bottom: 100px;
+      left: 10px;
+      right: 10px;
+      max-height: 200px;
+      background: rgba(0,0,0,0.9);
+      color: #0f0;
+      font-family: monospace;
+      font-size: 11px;
+      padding: 10px;
+      border-radius: 8px;
+      z-index: 99999;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    `;
+
+    const header = document.createElement('div');
+    header.textContent = '🔧 TG Downloader 调试 (点击关闭)';
+    header.style.cssText = 'color: #ff0; margin-bottom: 5px; cursor: pointer;';
+    header.onclick = () => panel.remove();
+    panel.appendChild(header);
+
+    const content = document.createElement('div');
+    content.id = 'tg-dl-debug-content';
+    panel.appendChild(content);
+
+    document.body.appendChild(panel);
+    return content;
+  },
+
+  panel(msg) {
+    if (!CONFIG.IS_MOBILE) return;
+    const content = document.getElementById('tg-dl-debug-content') || this.showDebugPanel();
+    if (content) {
+      const line = document.createElement('div');
+      line.textContent = `${new Date().toLocaleTimeString()} ${msg}`;
+      content.appendChild(line);
+      content.scrollTop = content.scrollHeight;
+    }
+  }
+};
+
+// 全局错误捕获（移动端调试）
+window.onerror = function(msg, url, line, col, error) {
+  DebugTools.log('error', `❌ 错误: ${msg} @ ${line}:${col}`);
+  DebugTools.panel(`❌ ${msg}`);
+  return false;
+};
     const ErrorHandler = {
         handle(context, error, fallback = null) {
             console.error(`[TG DL] ${context}:`, error);
@@ -1434,117 +1521,171 @@ const Downloader = {
         }
     };
 
-    // ============ 初始化 ============
-    function init() {
-        if (state.isDestroyed) return;
+// ============ 初始化 ============
+function init() {
+  if (state.isDestroyed) return;
 
-        UI.init();
+  DebugTools.log('info', '🚀 初始化开始...');
+  DebugTools.panel('初始化中...');
 
-        function cleanup() {
-            ResourceManager.cleanup();
-        }
+  // 检查环境
+  const env = DebugTools.checkEnvironment();
+  if (!env.hasBody) {
+    DebugTools.log('warn', '⏳ document.body 不存在，等待...');
+    DebugTools.panel('等待页面加载...');
+    setTimeout(init, 500);
+    return;
+  }
 
-        ResourceManager.addEventListener(window, 'beforeunload', cleanup);
-        ResourceManager.addEventListener(window, 'pagehide', cleanup);
+  UI.init();
 
-        ResourceManager.addEventListener(document, 'visibilitychange', () => {
-            if (document.visibilityState === 'hidden') {
-                // 页面不可见时可暂停非关键操作
-            }
-        });
+  function cleanup() {
+    ResourceManager.cleanup();
+  }
 
-        function addButton(video) {
-            if (state.isDestroyed) return;
-            if (video.dataset.tgDlBtnAdded) return;
-            video.dataset.tgDlBtnAdded = 'true';
+  ResourceManager.addEventListener(window, 'beforeunload', cleanup);
+  ResourceManager.addEventListener(window, 'pagehide', cleanup);
 
-            const container = video.closest('[class*="media"], [class*="video"]') || video.parentElement;
-            if (!container) return;
-
-            container.classList.add('tg-media-wrap');
-
-const btn = document.createElement('button');
- btn.className = 'tg-dl-btn';
- btn.innerHTML = `
- <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 4px; vertical-align: -2px;">
- <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
- <polyline points="7 10 12 15 17 10"/>
- <line x1="12" y1="15" x2="12" y2="3"/>
- </svg>
- 下载
- `;
- btn.setAttribute('aria-label', '下载视频');
-
-            const handleClick = async (e) => {
-                e.stopPropagation();
-                e.preventDefault();
-
-                if (btn.disabled || state.downloadingVideos.has(video)) {
-                    console.log('[TG DL] 该视频正在下载中，忽略重复点击');
-                    return;
-                }
-
-btn.disabled = true;
- btn.innerHTML = `
- <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="animation: spin 1s linear infinite; margin-right: 4px; vertical-align: -2px;">
- <line x1="12" y1="2" x2="12" y2="6"/>
- <line x1="12" y1="18" x2="12" y2="22"/>
- <line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/>
- <line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/>
- <line x1="2" y1="12" x2="6" y2="12"/>
- <line x1="18" y1="12" x2="22" y2="12"/>
- <line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/>
- <line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/>
- </svg>
- 下载中...
- `;
- state.downloadingVideos.add(video);
-
-                try {
-                    await Downloader.start(video);
-                } catch (err) {
-                    ErrorHandler.handle('下载过程异常', err);
-} finally {
- btn.disabled = false;
- btn.innerHTML = `
- <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 4px; vertical-align: -2px;">
- <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
- <polyline points="7 10 12 15 17 10"/>
- <line x1="12" y1="15" x2="12" y2="3"/>
- </svg>
- 下载
- `;
- state.downloadingVideos.delete(video);
- }
-            };
-
-            ResourceManager.addEventListener(btn, 'click', handleClick);
-            container.appendChild(btn);
-        }
-
-        let scanTimeout = null;
-        function scan() {
-            if (state.isDestroyed) return;
-            if (scanTimeout) clearTimeout(scanTimeout);
-            scanTimeout = setTimeout(() => {
-                document.querySelectorAll('video').forEach(addButton);
-            }, CONFIG.OBSERVER_DEBOUNCE);
-        }
-
-        const observer = new MutationObserver(scan);
-        ResourceManager.addObserver(observer);
-        observer.observe(document.body, { childList: true, subtree: true });
-
-        scan();
-
-        setInterval(() => {
-            if (state.isDestroyed) return;
-            const now = Date.now();
-            state.capturedUrls = state.capturedUrls.filter(c => now - c.captureTime < 300000);
-        }, 60000);
-
-        console.log('[TG Downloader v9.2] 已加载', CONFIG.IS_MOBILE ? '(移动端模式)' : '(桌面端模式)');
+  ResourceManager.addEventListener(document, 'visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      // 页面不可见时可暂停非关键操作
     }
+  });
+
+  function addButton(video) {
+    if (state.isDestroyed) return;
+    if (video.dataset.tgDlBtnAdded) return;
+    video.dataset.tgDlBtnAdded = 'true';
+
+    const container = video.closest('[class*="media"], [class*="video"]') || video.parentElement;
+    if (!container) return;
+
+    container.classList.add('tg-media-wrap');
+
+    const btn = document.createElement('button');
+    btn.className = 'tg-dl-btn';
+    btn.innerHTML = `
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 4px; vertical-align: -2px;">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="7 10 12 15 17 10"/>
+        <line x1="12" y1="15" x2="12" y2="3"/>
+      </svg>
+      下载
+    `;
+    btn.setAttribute('aria-label', '下载视频');
+
+    DebugTools.panel(`✅ 添加下载按钮`);
+
+    const handleClick = async (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+
+      if (btn.disabled || state.downloadingVideos.has(video)) {
+        DebugTools.log('info', '该视频正在下载中，忽略重复点击');
+        return;
+      }
+
+      btn.disabled = true;
+      btn.innerHTML = `
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="animation: spin 1s linear infinite; margin-right: 4px; vertical-align: -2px;">
+          <line x1="12" y1="2" x2="12" y2="6"/>
+          <line x1="12" y1="18" x2="12" y2="22"/>
+          <line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/>
+          <line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/>
+          <line x1="2" y1="12" x2="6" y2="12"/>
+          <line x1="18" y1="12" x2="22" y2="12"/>
+          <line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/>
+          <line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/>
+        </svg>
+        下载中...
+      `;
+      state.downloadingVideos.add(video);
+      DebugTools.panel('开始下载...');
+
+      try {
+        await Downloader.start(video);
+      } catch (err) {
+        ErrorHandler.handle('下载过程异常', err);
+        DebugTools.panel(`❌ 下载失败: ${err.message}`);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = `
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 4px; vertical-align: -2px;">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          下载
+        `;
+        state.downloadingVideos.delete(video);
+      }
+    };
+
+    ResourceManager.addEventListener(btn, 'click', handleClick);
+    container.appendChild(btn);
+  }
+
+  let scanTimeout = null;
+  let scanAttempts = 0;
+  function scan() {
+    if (state.isDestroyed) return;
+    if (scanTimeout) clearTimeout(scanTimeout);
+    scanTimeout = setTimeout(() => {
+      const videos = document.querySelectorAll('video');
+      DebugTools.log('info', `扫描到 ${videos.length} 个视频元素 (尝试 #${scanAttempts + 1})`);
+
+      if (videos.length > 0) {
+        DebugTools.panel(`📹 找到 ${videos.length} 个视频`);
+      }
+
+      videos.forEach(addButton);
+
+      // 移动端：如果没有找到视频，增加重试
+      if (videos.length === 0 && scanAttempts < 50) {
+        scanAttempts++;
+        DebugTools.panel(`⏳ 等待视频加载... (${scanAttempts}/50)`);
+        setTimeout(scan, 500);
+      } else if (videos.length === 0 && scanAttempts >= 50) {
+        DebugTools.panel('⚠️ 未找到视频元素');
+        DebugTools.log('warn', '多次扫描未找到视频元素，可能页面结构不同');
+      }
+    }, CONFIG.OBSERVER_DEBOUNCE);
+  }
+
+  // 等待 body 存在（移动端可能需要）
+  function waitForBody() {
+    if (document.body) {
+      const observer = new MutationObserver((mutations) => {
+        // 只在有实际变化时扫描
+        const hasVideoChanges = mutations.some(m =>
+          Array.from(m.addedNodes).some(n =>
+            n.nodeName === 'VIDEO' || (n.querySelector && n.querySelector('video'))
+          )
+        );
+        if (hasVideoChanges) {
+          scan();
+        }
+      });
+      ResourceManager.addObserver(observer);
+      observer.observe(document.body, { childList: true, subtree: true });
+      scan();
+      DebugTools.log('info', 'MutationObserver 已启动');
+      DebugTools.panel('✅ 脚本已启动');
+    } else {
+      DebugTools.log('info', '等待 document.body...');
+      setTimeout(waitForBody, 100);
+    }
+  }
+  waitForBody();
+
+  setInterval(() => {
+    if (state.isDestroyed) return;
+    const now = Date.now();
+    state.capturedUrls = state.capturedUrls.filter(c => now - c.captureTime < 300000);
+  }, 60000);
+
+  DebugTools.log('info', '已加载', CONFIG.IS_MOBILE ? '(移动端模式)' : '(桌面端模式)');
+}
 
     if (document.readyState === 'loading') {
         ResourceManager.addEventListener(document, 'DOMContentLoaded', init);
