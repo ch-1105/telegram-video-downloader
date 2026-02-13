@@ -1004,6 +1004,18 @@ if (pauseBtn) {
                         };
                     }
                 }
+
+                const progressiveMatch = url.match(/\/progressive\/document(\d+)/);
+                if (progressiveMatch) {
+                    const docId = progressiveMatch[1];
+                    return {
+                        url,
+                        fileName: `video_${docId}.mp4`,
+                        size: null,
+                        mimeType: 'video/mp4',
+                        id: docId
+                    };
+                }
             } catch (e) {
                 ErrorHandler.handle('视频信息提取失败', e);
             }
@@ -1091,6 +1103,33 @@ if (pauseBtn) {
 
         generateName(info, context, captureTime) {
             return FilenameGenerator.generate(info, context, captureTime);
+        },
+
+        async fetchSize(info) {
+            try {
+                const fetchFn = window._origFetch || window.fetch;
+                const response = await fetchFn(info.url, {
+                    headers: { 'Range': 'bytes=0-0' }
+                });
+
+                if (!response.ok && response.status !== 206) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                const contentRange = response.headers.get('Content-Range');
+                const totalMatch = contentRange && contentRange.match(/\/(\d+)$/);
+                const size = totalMatch ? parseInt(totalMatch[1], 10) : null;
+                const mimeType = response.headers.get('Content-Type') || info.mimeType || 'video/mp4';
+
+                if (!size || Number.isNaN(size)) {
+                    return null;
+                }
+
+                return { size, mimeType };
+            } catch (e) {
+                ErrorHandler.handle('获取文件大小失败', e);
+                return null;
+            }
         }
     };
 
@@ -1257,10 +1296,20 @@ if (pauseBtn) {
             const taskId = ++state.taskId;
             const captureStartTime = Date.now();
 
-            const info = await VideoInfo.capture(videoElement);
+            let info = await VideoInfo.capture(videoElement);
             if (!info) {
                 alert('未找到视频信息，请播放视频后再试');
                 return;
+            }
+
+            if (!info.size || Number.isNaN(info.size)) {
+                const resolved = await VideoInfo.fetchSize(info);
+                if (!resolved || !resolved.size) {
+                    alert('无法获取视频大小，请稍后再试');
+                    return;
+                }
+                info.size = resolved.size;
+                info.mimeType = resolved.mimeType || info.mimeType;
             }
 
             const context = VideoInfo.getContext(videoElement);
