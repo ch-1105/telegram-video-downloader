@@ -1,13 +1,11 @@
 // ==UserScript==
 // @name Telegram Web Video Downloader - Clean
 // @namespace http://tampermonkey.net/
-// @version 9.5
+// @version 9.6
 // @description 简洁高效的 Telegram 视频下载器（支持手机端）
 // @author You
 // @match https://web.telegram.org/*
-// @match https://web.telegram.org/k/*
-// @match https://web.telegram.org/a/*
-// @match https://web.telegram.org/z/*
+// @match https://web.tg/*
 // @grant none
 // @run-at document-start
 // ==/UserScript==
@@ -20,7 +18,7 @@
         // 动态块大小：Telegram Service Worker 最大返回 2MB，分块不能超过此值
         getChunkSize(fileSize) {
             if (fileSize < 10 * 1024 * 1024) return 512 * 1024;       // <10MB: 512KB
-            return 1024 * 1024;                                        // >=10MB: 1MB
+            return 2048 * 1024;                                        // >=10MB: 2MB（SW 上限内）
         },
         RETRY_COUNT: 3,
         TIMEOUT: 15000,
@@ -32,8 +30,7 @@
             return CONFIG.IS_MOBILE ? 20 * 1024 * 1024 : 100 * 1024 * 1024;
         },
         OBSERVER_DEBOUNCE: 100,
-        IS_MOBILE: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent),
-        UI_SCALE: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ? 1.2 : 1
+        IS_MOBILE: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
     };
 
     // ============ 状态管理 ============
@@ -56,15 +53,7 @@ const ErrorHandler = {
             return fallback;
         },
 
-        wrapAsync(fn, context) {
-            return async (...args) => {
-                try {
-                    return await fn(...args);
-                } catch (e) {
-                    return this.handle(context, e);
-                }
-            };
-        }
+
     };
 
     // ============ 文件名生成器 ============
@@ -81,24 +70,33 @@ const ErrorHandler = {
 
         // 持久化的文件名集合
         getExistingNames() {
+            // 内存缓存：与防抖写入联动，保证同会话内立刻可见新文件名
+            if (this._nameCache) return this._nameCache;
             try {
                 const stored = localStorage.getItem('tg_dl_filenames');
                 if (stored) {
-                    return new Set(JSON.parse(stored));
+                    this._nameCache = new Set(JSON.parse(stored));
+                    return this._nameCache;
                 }
             } catch (e) {}
-            return new Set();
+            this._nameCache = new Set();
+            return this._nameCache;
         },
 
         saveExistingNames(names) {
-            try {
-                const namesArray = Array.from(names);
-                // 只保留最近1000个文件名
-                const recentNames = namesArray.slice(-1000);
-                localStorage.setItem('tg_dl_filenames', JSON.stringify(recentNames));
-            } catch (e) {
-                ErrorHandler.handle('保存文件名记录失败', e);
-            }
+            this._nameCache = names;
+            this._pendingNames = names;
+            clearTimeout(this._saveTimer);
+            this._saveTimer = setTimeout(() => {
+                try {
+                    const namesArray = Array.from(this._pendingNames);
+                    // 只保留最近1000个文件名
+                    const recentNames = namesArray.slice(-1000);
+                    localStorage.setItem('tg_dl_filenames', JSON.stringify(recentNames));
+                } catch (e) {
+                    ErrorHandler.handle('保存文件名记录失败', e);
+                }
+            }, 800);
         },
 
         // 提取有意义的消息摘要
@@ -282,14 +280,15 @@ const ErrorHandler = {
             // 检测冲突并添加序号
             let finalName = baseName + ext;
             let sequence = 1;
-            const lowerFinalName = finalName.toLowerCase();
+            let lowerFinalName = finalName.toLowerCase();
 
-            // 检查当前会话和存储的历史记录
+            // 检查当前会话和存储的历史记录（lowerFinalName 需随 finalName 更新，否则永远跳到 _999）
             while (existingNames.has(lowerFinalName) || this.checkSessionConflict(finalName)) {
                 const seqStr = String(sequence).padStart(this.config.sequenceDigits, '0');
                 const maxBaseLen = maxLen - this.config.sequenceDigits - 1;
                 const base = baseName.substring(0, maxBaseLen).replace(/_+$/, '');
                 finalName = `${base}_${seqStr}${ext}`;
+                lowerFinalName = finalName.toLowerCase();
                 sequence++;
 
                 if (sequence > 999) {
@@ -341,8 +340,8 @@ const ErrorHandler = {
             state.eventListeners = [];
 
             // 清理XHR和fetch的hook
-            if (window.XMLHttpRequest && window.XMLHttpRequest.prototype.open !== XMLHttpRequest.prototype.open) {
-                window.XMLHttpRequest.prototype.open = XMLHttpRequest.prototype.open;
+            if (window.XMLHttpRequest && window.XMLHttpRequest.prototype.open !== _origXHROpen) {
+                window.XMLHttpRequest.prototype.open = _origXHROpen;
             }
             if (window.fetch !== window._origFetch) {
                 window.fetch = window._origFetch;
@@ -351,9 +350,6 @@ const ErrorHandler = {
             // 取消所有正在进行的任务
             state.tasks.forEach(task => {
                 task.cancelled = true;
-                if (task.pauseController) {
-                    task.pauseController.abort();
-                }
             });
 
             // 清理UI
@@ -377,7 +373,6 @@ const ErrorHandler = {
             // 样式
             const style = document.createElement('style');
             style.id = 'tg-dl-style';
-            const scale = CONFIG.UI_SCALE;
             const isMobile = CONFIG.IS_MOBILE;
 
  style.textContent = `
@@ -1024,19 +1019,38 @@ if (pauseBtn) {
         },
 
         async capture(videoElement) {
+            // 声明在 try 外，finally 中才能访问
+            let wasPaused = false;
+            let prevTime = 0;
+            let didReplay = false;
             try {
-                // Step 1: 暂停视频
-                videoElement.pause();
-                await new Promise(r => setTimeout(r, 500));
+                // 1) 优先使用 video 元素已有的 URL（不打断播放）
+                const src = (videoElement.currentSrc || videoElement.src || '');
+                if (src && !src.startsWith('blob:')) {
+                    const info = VideoInfo.extract(src);
+                    if (info) {
+                        console.log('[TG DL] 使用元素 src:', info.fileName, 'ID:', info.id);
+                        return info;
+                    }
+                }
 
-                // Step 2: 记录时间戳
+                // 2) 其次使用 15 秒内捕获到的 URL（大概率是刚播放过的这个视频）
+                if (state.capturedUrls.length > 0) {
+                    const last = state.capturedUrls[state.capturedUrls.length - 1];
+                    if (Date.now() - last.captureTime < 15000) {
+                        console.log('[TG DL] 使用已捕获视频:', last.fileName, 'ID:', last.id);
+                        return last;
+                    }
+                }
+
+                // 3) 都没有时才触发一次加载（保存并恢复用户播放状态）
+                didReplay = true;
+                wasPaused = videoElement.paused;
+                prevTime = videoElement.currentTime;
                 const captureStart = Date.now();
-                performance.clearResourceTimings();
+                const beforeEntries = new Set(performance.getEntriesByType('resource').map(e => e.name));
 
-                // Step 3: 强制从头播放
-                videoElement.currentTime = 0;
-                await new Promise(r => setTimeout(r, 100));
-
+                try { videoElement.currentTime = 0; } catch (e) {}
                 try {
                     videoElement.play().catch(e => {
                         ErrorHandler.handle('视频播放失败', e);
@@ -1045,7 +1059,7 @@ if (pauseBtn) {
                     ErrorHandler.handle('视频播放异常', e);
                 }
 
-                // Step 4: 轮询等待新URL
+                // 4) 轮询等待新URL
                 for (let i = 0; i < 30; i++) {
                     if (state.isDestroyed) return null;
                     await new Promise(r => setTimeout(r, 100));
@@ -1057,10 +1071,11 @@ if (pauseBtn) {
                     }
                 }
 
-                // Step 5: 超时回退
+                // 5) 超时回退：对比 Performance 资源差集（不再清空全局缓冲）
                 console.log('[TG DL] 拦截超时，尝试Performance API');
                 const entries = performance.getEntriesByType('resource');
                 for (let i = entries.length - 1; i >= 0; i--) {
+                    if (beforeEntries.has(entries[i].name)) continue;
                     const info = VideoInfo.extract(entries[i].name);
                     if (info) {
                         console.log('[TG DL] 从Performance API获取:', info.fileName);
@@ -1069,6 +1084,20 @@ if (pauseBtn) {
                 }
             } catch (e) {
                 ErrorHandler.handle('视频捕获失败', e);
+            } finally {
+                // 仅在真正触发过回放时恢复播放状态（尽力而为，避免打断用户观看）
+                if (didReplay) {
+                    try {
+                        if (videoElement.currentTime !== prevTime) {
+                            videoElement.currentTime = prevTime;
+                        }
+                        if (wasPaused) {
+                            videoElement.pause();
+                        } else {
+                            videoElement.play().catch(() => {});
+                        }
+                    } catch (e) {}
+                }
             }
 
             return null;
@@ -1134,6 +1163,19 @@ if (pauseBtn) {
     };
 
     // ============ 全局网络拦截 ============
+    // 记录捕获的 URL：按 id 去重（重复请求只保留最新），上限 100 条
+    function recordCapture(info) {
+        const existingIndex = state.capturedUrls.findIndex(c => c.id === info.id);
+        const entry = { ...info, captureTime: Date.now() };
+        if (existingIndex >= 0) {
+            state.capturedUrls.splice(existingIndex, 1);
+        }
+        state.capturedUrls.push(entry);
+        if (state.capturedUrls.length > 100) {
+            state.capturedUrls = state.capturedUrls.slice(-100);
+        }
+    }
+
     const _origXHROpen = XMLHttpRequest.prototype.open;
     window._origXHROpen = _origXHROpen;
 
@@ -1141,10 +1183,7 @@ if (pauseBtn) {
         try {
             const info = VideoInfo.extract(typeof url === 'string' ? url : String(url));
             if (info) {
-                state.capturedUrls.push({ ...info, captureTime: Date.now() });
-                if (state.capturedUrls.length > 100) {
-                    state.capturedUrls = state.capturedUrls.slice(-50);
-                }
+                recordCapture(info);
                 console.log('[TG DL] XHR捕获:', info.fileName, 'ID:', info.id);
             }
         } catch (e) {
@@ -1162,10 +1201,7 @@ if (pauseBtn) {
             if (url) {
                 const info = VideoInfo.extract(url);
                 if (info) {
-                    state.capturedUrls.push({ ...info, captureTime: Date.now() });
-                    if (state.capturedUrls.length > 100) {
-                        state.capturedUrls = state.capturedUrls.slice(-50);
-                    }
+                    recordCapture(info);
                     console.log('[TG DL] Fetch捕获:', info.fileName, 'ID:', info.id);
                 }
             }
@@ -1183,6 +1219,7 @@ if (pauseBtn) {
             this.filename = filename;
             this.cancelled = false;
             this.paused = false;
+            this.pausePromise = null;
             this.pauseResolve = null;
             this.downloaded = 0;
             this.chunks = new Map();
@@ -1199,8 +1236,10 @@ if (pauseBtn) {
             if (!this.paused) return;
             this.paused = false;
             if (this.pauseResolve) {
-                this.pauseResolve();
+                const resolve = this.pauseResolve;
                 this.pauseResolve = null;
+                this.pausePromise = null;
+                resolve();
             }
         }
 
@@ -1210,11 +1249,14 @@ if (pauseBtn) {
             UI.updateTask(this.id, 0, '正在取消...', '');
         }
 
-        async waitIfPaused() {
+        waitIfPaused() {
             if (this.paused) {
-                return new Promise(resolve => {
-                    this.pauseResolve = resolve;
-                });
+                if (!this.pausePromise) {
+                    this.pausePromise = new Promise(resolve => {
+                        this.pauseResolve = resolve;
+                    });
+                }
+                return this.pausePromise;
             }
         }
     }
@@ -1225,17 +1267,25 @@ if (pauseBtn) {
         async downloadChunk(url, start, end, fileSize, retryCount = 0) {
             try {
                 // 不使用 AbortController — Telegram Service Worker 不兼容 signal
-                // 用 Promise.race 实现超时
+                // 用 Promise.race 实现超时（完成后立即清理定时器）
                 const fetchPromise = _origFetch(url, {
                     headers: { 'Range': `bytes=${start}-${end}` }
                 });
-                const timeoutPromise = new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error('请求超时')), CONFIG.TIMEOUT)
-                );
-                const response = await Promise.race([fetchPromise, timeoutPromise]);
+                let timeoutId = null;
+                const timeoutPromise = new Promise((_, reject) => {
+                    timeoutId = setTimeout(() => reject(new Error('请求超时')), CONFIG.TIMEOUT);
+                });
+                let response;
+                try {
+                    response = await Promise.race([fetchPromise, timeoutPromise]);
+                } finally {
+                    clearTimeout(timeoutId);
+                }
 
-                if (!response.ok && response.status !== 206) {
-                    throw new Error(`HTTP ${response.status}`);
+                // Range 请求必须返回 206；返回 200（整文件）说明服务端不支持断点续传，
+                // 直接失败，避免把整文件重复拼接成损坏文件
+                if (response.status !== 206) {
+                    throw new Error(`服务器未返回 Range 响应 (HTTP ${response.status})`);
                 }
 
                 const blob = await response.blob();
@@ -1248,9 +1298,14 @@ if (pauseBtn) {
                     throw new Error(`返回数据为空 (期望 ${expectedSize} bytes)`);
                 }
 
-                // 校验：数据大小不能偏差太大（最后一块允许较小）
+                // 校验：不能超过预期（整文件被当作分块返回时立即失败）
+                if (data.length > expectedSize) {
+                    throw new Error(`数据超出预期: ${data.length}/${expectedSize}`);
+                }
+
+                // 校验：非最后一块必须精确匹配；最后一块允许因文件大小变化略小
                 const isLastChunk = (end >= fileSize - 1);
-                if (!isLastChunk && data.length < expectedSize * 0.9) {
+                if (data.length < expectedSize && (!isLastChunk || data.length < expectedSize * 0.9)) {
                     throw new Error(`数据不完整: ${data.length}/${expectedSize}`);
                 }
 
@@ -1292,6 +1347,22 @@ if (pauseBtn) {
             return Promise.all(downloadPromises);
         },
 
+        // 检测 HLS 播放列表（m3u8），避免用 Range 下载到无效文件
+        async detectHlsPlaylist(info) {
+            try {
+                const response = await _origFetch(info.url, {
+                    headers: { 'Range': 'bytes=0-1023' }
+                });
+                if (!response.ok) return false;
+                const contentType = response.headers.get('Content-Type') || '';
+                if (/mpegurl|m3u8|application\/vnd\.apple/i.test(contentType)) return true;
+                const head = await response.clone().text().catch(() => '');
+                return head.startsWith('#EXTM3U');
+            } catch (e) {
+                return false;
+            }
+        },
+
         async start(videoElement) {
             const taskId = ++state.taskId;
             const captureStartTime = Date.now();
@@ -1312,10 +1383,34 @@ if (pauseBtn) {
                 info.mimeType = resolved.mimeType || info.mimeType;
             }
 
+            // HLS 播放列表防护：m3u8 是播放列表，不能用 Range 分块下载
+            if (info.url.includes('/hls_stream/')) {
+                const isHls = await this.detectHlsPlaylist(info);
+                if (isHls) {
+                    alert('检测到 HLS 流（m3u8 播放列表），当前版本暂不支持此类视频');
+                    return;
+                }
+            }
+
             const context = VideoInfo.getContext(videoElement);
             const filename = VideoInfo.generateName(info, context, captureStartTime);
 
             console.log('[TG DL] 开始下载:', filename, '大小:', (info.size / 1024 / 1024).toFixed(2) + 'MB');
+
+            // 桌面端优先尝试流式写盘（File System Access API），失败自动回退 Blob 下载
+            let streamTarget = null;
+            if (typeof window.showSaveFilePicker === 'function') {
+                try {
+                    const handle = await window.showSaveFilePicker({ suggestedName: filename });
+                    streamTarget = { handle, stream: await handle.createWritable() };
+                } catch (e) {
+                    if (e && e.name === 'AbortError') {
+                        console.log('[TG DL] 用户取消保存');
+                        return;
+                    }
+                    console.warn('[TG DL] 流式保存不可用，回退 Blob 下载:', e && e.message);
+                }
+            }
 
             const task = new DownloadTask(taskId, info, filename);
             state.tasks.set(taskId, task);
@@ -1334,14 +1429,24 @@ if (pauseBtn) {
                 chunksToDownload.push({ index: i, start, end });
             }
 
+            const abortStream = async () => {
+                if (streamTarget) {
+                    try { await streamTarget.stream.abort(); } catch (e) {}
+                    streamTarget = null;
+                }
+            };
+
             try {
-                // 有序的 Blob 片段列表，最终按顺序拼接
+                // 有序的 Blob 片段列表，最终按顺序拼接（流式保存时不需要）
                 const orderedBlobs = [];
                 // 当前待合并的分块索引范围
                 let mergeFromIndex = 0;
+                // 流式模式下已写入的字节数
+                let mergedBytes = 0;
 
                 for (let i = 0; i < chunksToDownload.length; i += batchSize) {
                     if (task.cancelled) {
+                        await abortStream();
                         UI.removeTask(taskId);
                         return;
                     }
@@ -1378,7 +1483,13 @@ if (pauseBtn) {
 
                         if (blobParts.length > 0) {
                             const partBlob = new Blob(blobParts, { type: info.mimeType });
-                            orderedBlobs.push(partBlob);
+                            if (streamTarget) {
+                                await task.waitIfPaused();
+                                await streamTarget.stream.write(partBlob);
+                                mergedBytes += partBlob.size;
+                            } else {
+                                orderedBlobs.push(partBlob);
+                            }
 
                             // 释放 Uint8Array 引用
                             for (let j = mergeFromIndex; j < downloadedSoFar; j++) {
@@ -1396,28 +1507,37 @@ if (pauseBtn) {
                 }
 
                 if (task.cancelled) {
+                    await abortStream();
                     UI.removeTask(taskId);
                     return;
                 }
 
-                UI.updateTask(taskId, 99, '正在合并...', '');
+                UI.updateTask(taskId, 99, streamTarget ? '正在写入...' : '正在合并...', '');
 
-                // 最终合并
-                const blob = orderedBlobs.length === 1
-                    ? orderedBlobs[0]
-                    : new Blob(orderedBlobs, { type: info.mimeType });
+                let finalSize;
+                if (streamTarget) {
+                    await streamTarget.stream.close();
+                    finalSize = mergedBytes;
+                } else {
+                    // 最终合并
+                    const blob = orderedBlobs.length === 1
+                        ? orderedBlobs[0]
+                        : new Blob(orderedBlobs, { type: info.mimeType });
+                    finalSize = blob.size;
 
-                console.log(`[TG DL] 实际下载: ${task.downloaded} bytes, 期望: ${info.size} bytes, Blob: ${blob.size} bytes`);
+                    if (finalSize !== info.size) {
+                        throw new Error(`文件不完整: ${finalSize}/${info.size}`);
+                    }
 
-                if (blob.size < info.size * 0.95) {
-                    throw new Error(`文件不完整: ${blob.size}/${info.size}`);
+                    this.save(blob, filename);
                 }
 
-                this.save(blob, filename);
+                console.log(`[TG DL] 实际下载: ${task.downloaded} bytes, 期望: ${info.size} bytes, 写入: ${finalSize} bytes`);
                 UI.updateTask(taskId, 100, '完成', '');
                 setTimeout(() => UI.removeTask(taskId), 3000);
 
             } catch (e) {
+                await abortStream();
                 console.error('[TG DL] 下载失败:', e);
                 UI.updateTask(taskId, (task.downloaded / info.size) * 100, '下载失败: ' + e.message, '');
                 setTimeout(() => UI.removeTask(taskId), 5000);
@@ -1463,12 +1583,6 @@ function init() {
 
     ResourceManager.addEventListener(window, 'beforeunload', cleanup);
     ResourceManager.addEventListener(window, 'pagehide', cleanup);
-
-    ResourceManager.addEventListener(document, 'visibilitychange', () => {
-        if (document.visibilityState === 'hidden') {
-            // 页面不可见时可暂停非关键操作
-        }
-    });
 
     function addButton(video) {
         if (state.isDestroyed) return;
@@ -1548,8 +1662,14 @@ function init() {
             const videos = document.querySelectorAll('video');
             videos.forEach(addButton);
 
-            // 移动端：如果没有找到视频，增加重试
-            if (videos.length === 0 && scanAttempts < 50) {
+            if (videos.length > 0) {
+                // 找到视频后重置重试计数
+                scanAttempts = 0;
+                return;
+            }
+
+            // 如果没有找到视频，增加重试（最多 50 次，间隔 500ms）
+            if (scanAttempts < 50) {
                 scanAttempts++;
                 setTimeout(scan, 500);
             }
@@ -1587,3 +1707,6 @@ function init() {
         init();
     }
 })();
+
+
+
